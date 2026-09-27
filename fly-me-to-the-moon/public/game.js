@@ -361,15 +361,20 @@ async function wakeUp() {
   await speak('#alive-dialog', 'Can you get me to the moon? Pretty please?');
 
   const reply = $('#btn-reply');
-  reply.hidden = false;
-  reply.focus({ preventScroll: true });
-  await new Promise((resolve) => { reply.onclick = resolve; });
-  reply.hidden = true;
+  const chooseReply = async (line) => {
+    reply.querySelector('.reply-line').textContent = line;
+    reply.hidden = false;
+    reply.focus({ preventScroll: true });
+    await new Promise((resolve) => { reply.onclick = resolve; });
+    reply.hidden = true;
+  };
+  await chooseReply('But how...?');
 
   await speak('#alive-dialog', 'But how...?', { player: true });
   await wait(700);
   scene.cue('happy');
-  await speak('#alive-dialog', "You steer. I'll try not to scream. Deal?", { wait: true });
+  await speak('#alive-dialog', "You steer. I'll try not to scream. Deal?");
+  await chooseReply('DEAL!');
   if (currentScene !== scene) return;
   stopScene();
   renderCard();
