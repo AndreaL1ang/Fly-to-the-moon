@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fly Me to the Moon</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="app">
+
+    <!-- 1. Draw -->
+    <section id="screen-draw" class="screen active" aria-labelledby="title">
+      <header class="masthead">
+        <canvas id="title-moon" class="pixel title-moon" aria-hidden="true"></canvas>
+        <h1 id="title">Fly Me<br />to the Moon</h1>
+      </header>
+      <p class="lede">Draw someone. Anything counts: a cat, a toaster, a stick figure with a jetpack. When you're done, they wake up, and they'll have a favour to ask.</p>
+
+      <div class="sheet">
+        <canvas id="doodle" width="480" height="480" aria-label="Drawing area. Draw your character here."></canvas>
+        <div class="tools" role="toolbar" aria-label="Drawing tools">
+          <div class="swatches">
+            <button class="swatch active" data-color="#1B2250" style="--c:#1B2250" aria-label="Ink"></button>
+            <button class="swatch" data-color="#FF004D" style="--c:#FF004D" aria-label="Red"></button>
+            <button class="swatch" data-color="#00E436" style="--c:#00E436" aria-label="Green"></button>
+            <button class="swatch" data-color="#29ADFF" style="--c:#29ADFF" aria-label="Blue"></button>
+            <button class="swatch" data-color="#FFA300" style="--c:#FFA300" aria-label="Orange"></button>
+            <button class="swatch" data-color="#FF77A8" style="--c:#FF77A8" aria-label="Pink"></button>
+          </div>
+          <div class="tool-buttons">
+            <button id="tool-size" class="tool" aria-pressed="false">Thick</button>
+            <button id="tool-eraser" class="tool" aria-pressed="false">Eraser</button>
+            <button id="tool-undo" class="tool">Undo</button>
+            <button id="tool-clear" class="tool">Clear</button>
+          </div>
+        </div>
+      </div>
+
+      <p id="draw-error" class="error" role="alert" hidden></p>
+      <div class="actions">
+        <button id="btn-ai" class="btn primary" disabled>Bring them to life</button>
+        <button id="btn-manual" class="btn ghost">Set my own stats</button>
+      </div>
+    </section>
+
+    <!-- 2. Manual stats -->
+    <section id="screen-manual" class="screen" aria-labelledby="manual-title">
+      <h2 id="manual-title">Build your character</h2>
+      <p class="lede">You have <strong id="points-left">6 points</strong> to spend. Extra HP and strengths cost a point each. A weakness earns one back. Each trait has a <em>power</em>, and the levels test those powers.</p>
+
+      <form id="manual-form" class="panel paper-form" novalidate>
+        <label>Name
+          <input id="m-name" maxlength="40" required placeholder="Commander Crumb" />
+        </label>
+        <label>Personality
+          <input id="m-personality" maxlength="60" required placeholder="nervous but determined" />
+        </label>
+        <label>Why do they want the moon?
+          <input id="m-reason" maxlength="120" required placeholder="I promised my sister I'd wave from up there" />
+          <span class="help">They'll tell you this when they wake up.</span>
+        </label>
+        <label>What are they carrying?
+          <input id="m-keepsake" maxlength="40" placeholder="a chewed dog collar" />
+        </label>
+        <label>HP <output id="m-hp-out">50</output>
+          <input id="m-hp" type="range" min="0" max="4" step="1" value="0" aria-describedby="hp-help" />
+          <span id="hp-help" class="help">Starts at 50. Each point adds 25.</span>
+        </label>
+
+        <fieldset>
+          <legend>Traits (up to 3)</legend>
+          <div id="trait-rows"></div>
+          <p class="help">steady = timing and nerve · agile = dodging · clever = seeing it coming · lucky = second chances · heart = getting along with the locals</p>
+        </fieldset>
+
+        <p id="manual-error" class="error" role="alert" hidden></p>
+        <div class="actions">
+          <button type="submit" class="btn primary">Wake them up</button>
+          <button type="button" id="btn-manual-back" class="btn ghost">Back to drawing</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- 3. Loading -->
+    <section id="screen-loading" class="screen" aria-live="polite">
+      <div class="loader" aria-hidden="true"><span></span><span></span><span></span></div>
+      <p id="loading-text" class="loading-text">Your drawing is waking up…</p>
+    </section>
+
+    <!-- 4. They come to life -->
+    <section id="screen-alive" class="screen" aria-label="Your character wakes up">
+      <div class="viewport">
+        <canvas id="alive-canvas" class="pixel stage-canvas" aria-hidden="true"></canvas>
+      </div>
+      <div id="alive-dialog" class="dialog" hidden>
+        <img class="dialog-portrait pixel" alt="" />
+        <div class="dialog-body">
+          <p class="dialog-name"></p>
+          <p class="dialog-text" aria-live="polite"></p>
+          <span class="dialog-next" aria-hidden="true">▼</span>
+        </div>
+      </div>
+      <button id="btn-reply" class="reply" hidden><span class="reply-who">You</span><span class="reply-line">But how...?</span></button>
+    </section>
+
+    <!-- 5. Character sheet -->
+    <section id="screen-card" class="screen" aria-labelledby="card-name">
+      <p class="kicker">Character sheet</p>
+      <article class="card panel">
+        <img id="card-img" class="card-img pixel" alt="Your character as a pixel sprite" />
+        <div class="card-body">
+          <h2 id="card-name"></h2>
+          <p id="card-personality" class="personality"></p>
+          <p class="hp-line"><span class="hp-label">HP</span> <span id="card-hp"></span></p>
+
+          <div class="reason">
+            <p class="label">Why the moon</p>
+            <p id="card-reason-line" class="reason-line"></p>
+            <p class="reason-meta">Carrying <strong id="card-keepsake"></strong></p>
+          </div>
+
+          <ul id="card-traits" class="traits"></ul>
+          <div class="powers">
+            <p class="label">Flight rating</p>
+            <div id="card-powers" class="power-chips"></div>
+          </div>
+        </div>
+      </article>
+      <div class="actions">
+        <button id="btn-launch" class="btn primary">Let's go!</button>
+        <button id="btn-reroll" class="btn ghost">Try another take</button>
+        <button id="btn-redraw" class="btn ghost">Redraw</button>
+      </div>
+    </section>
+
+    <!-- 6. Level briefing -->
+    <section id="screen-brief" class="screen" aria-labelledby="brief-title">
+      <canvas id="route-canvas" class="pixel route-canvas" role="img" aria-label="How far you are from Earth to the moon"></canvas>
+      <p id="brief-kicker" class="kicker"></p>
+      <h2 id="brief-title"></h2>
+      <div id="brief-dialog" class="dialog">
+        <img class="dialog-portrait pixel" alt="" />
+        <div class="dialog-body">
+          <p class="dialog-name"></p>
+          <p class="dialog-text" aria-live="polite"></p>
+        </div>
+      </div>
+      <div class="panel brief-card">
+        <p class="label">Mission</p>
+        <p id="brief-objective" class="brief-line"></p>
+        <p class="label">Controls</p>
+        <p id="brief-hint" class="brief-line"></p>
+        <p class="label">Traits in play</p>
+        <ul id="brief-traits" class="brief-traits"></ul>
+      </div>
+      <div class="actions">
+        <button id="btn-brief-go" class="btn primary">Start</button>
+      </div>
+    </section>
+
+    <!-- 7. Flight: the levels -->
+    <section id="screen-flight" class="screen" aria-labelledby="flight-objective">
+      <div class="hud">
+        <div class="hud-who">
+          <span id="hud-name" class="hud-name"></span>
+          <span id="hud-stage" class="hud-stage"></span>
+        </div>
+        <div class="hp-bar" role="meter" aria-label="Health" aria-valuemin="0" id="hp-meter">
+          <div id="hp-fill" class="hp-fill"></div>
+          <span id="hp-text" class="hp-text"></span>
+        </div>
+      </div>
+      <p id="flight-objective" class="flight-objective"></p>
+      <div class="viewport">
+        <canvas id="flight" class="pixel stage-canvas" aria-label="The level. Your character is on screen."></canvas>
+      </div>
+      <p id="flight-hint" class="flight-hint"></p>
+    </section>
+
+    <!-- 8. After a level, your character tells you how it went -->
+    <section id="screen-log" class="screen" aria-labelledby="log-headline">
+      <p class="kicker">Level clear</p>
+      <h2 id="log-headline" class="log-headline"></h2>
+      <div class="score-row">
+        <div class="score-box"><span id="log-score"></span><small>score</small></div>
+        <span id="log-delta" class="delta"></span>
+      </div>
+      <div id="log-dialog" class="dialog">
+        <img class="dialog-portrait pixel" alt="" />
+        <div class="dialog-body">
+          <p class="dialog-name"></p>
+          <p class="dialog-text" aria-live="polite"></p>
+        </div>
+      </div>
+      <ul id="log-facts" class="log-facts"></ul>
+      <div class="actions">
+        <button id="btn-log-continue" class="btn primary">Keep flying</button>
+      </div>
+    </section>
+
+    <!-- 9. Mid-flight drawing emergency -->
+    <section id="screen-repair" class="screen" aria-labelledby="repair-title">
+      <p class="kicker">Emergency!</p>
+      <h2 id="repair-title">Draw the fix</h2>
+      <div id="repair-dialog" class="dialog">
+        <img class="dialog-portrait pixel" alt="" />
+        <div class="dialog-body">
+          <p class="dialog-name"></p>
+          <p class="dialog-text" aria-live="polite"></p>
+        </div>
+      </div>
+
+      <div class="sheet repair-sheet">
+        <canvas id="repair-doodle" width="480" height="360" aria-label="Drawing area. Draw a gadget to fix the emergency."></canvas>
+        <div class="tools" role="toolbar" aria-label="Repair drawing tools">
+          <div class="swatches repair-swatches">
+            <button class="swatch active" data-color="#1B2250" style="--c:#1B2250" aria-label="Ink"></button>
+            <button class="swatch" data-color="#FF004D" style="--c:#FF004D" aria-label="Red"></button>
+            <button class="swatch" data-color="#00E436" style="--c:#00E436" aria-label="Green"></button>
+            <button class="swatch" data-color="#29ADFF" style="--c:#29ADFF" aria-label="Blue"></button>
+            <button class="swatch" data-color="#FFA300" style="--c:#FFA300" aria-label="Orange"></button>
+            <button class="swatch" data-color="#FF77A8" style="--c:#FF77A8" aria-label="Pink"></button>
+          </div>
+          <div class="tool-buttons">
+            <button id="repair-tool-size" class="tool" aria-pressed="false">Thick</button>
+            <button id="repair-tool-eraser" class="tool" aria-pressed="false">Eraser</button>
+            <button id="repair-tool-undo" class="tool">Undo</button>
+            <button id="repair-tool-clear" class="tool">Clear</button>
+          </div>
+        </div>
+      </div>
+
+      <p id="repair-error" class="error" role="alert" hidden></p>
+      <div id="repair-result" class="panel repair-result" hidden aria-live="polite">
+        <p class="repair-read"><span>AI sees:</span> <strong id="repair-object"></strong></p>
+        <div class="score-row">
+          <div class="score-box"><span id="repair-score"></span><small>repair</small></div>
+          <span id="repair-delta" class="delta"></span>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="btn-repair-submit" class="btn primary" disabled>Give it to them</button>
+        <button id="btn-repair-continue" class="btn primary" hidden>Back to the flight</button>
+      </div>
+    </section>
+
+    <!-- 10. The moon, and the end -->
+    <section id="screen-finale" class="screen" aria-label="The end">
+      <div class="viewport">
+        <canvas id="finale-canvas" class="pixel stage-canvas" aria-hidden="true"></canvas>
+      </div>
+      <div id="finale-dialog" class="dialog" hidden>
+        <img class="dialog-portrait pixel" alt="" />
+        <div class="dialog-body">
+          <p class="dialog-name"></p>
+          <p class="dialog-text" aria-live="polite"></p>
+          <span class="dialog-next" aria-hidden="true">▼</span>
+        </div>
+      </div>
+      <p id="finale-stats" class="finale-stats" hidden></p>
+      <div id="finale-actions" class="actions" hidden>
+        <button id="btn-again" class="btn primary">Fly again</button>
+        <button id="btn-new" class="btn ghost">Draw someone new</button>
+      </div>
+    </section>
+
+    <footer class="footer"><span id="mode-note"></span></footer>
+  </main>
+
+  <script src="retro.js"></script>
+  <script src="minigames.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
