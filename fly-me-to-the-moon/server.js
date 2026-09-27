@@ -50,7 +50,13 @@ async function askGemini({ system, prompt, image, beforeImage }) {
       body: JSON.stringify({
         system_instruction: { parts: [{ text: system }] },
         contents: [{ role: 'user', parts }],
-        generationConfig: { responseMimeType: 'application/json', temperature: 1.0 },
+        generationConfig: {
+          responseMimeType: 'application/json',
+          temperature: 1.0,
+          // These game responses are small, playful JSON objects. Deep reasoning
+          // adds several seconds without improving the result.
+          thinkingConfig: { thinkingBudget: 0 },
+        },
       }),
     }
   );
@@ -100,12 +106,12 @@ async function askAI(request) {
   try {
     return await ask(request);
   } catch (err) {
-    // Free tiers are rate limited (429) or briefly overloaded (503). Wait the
-    // time the provider asks for, up to 25 seconds, and try exactly once more.
+    // Free tiers are rate limited (429) or briefly overloaded (503). Retry once,
+    // but keep the pause short so the game can use its built-in fallback quickly.
     const busy = / (429|503):/.exec(err.message);
     if (!busy) throw err;
     const hinted = /try again in ([\d.]+)s/i.exec(err.message);
-    const waitMs = Math.min(25000, hinted ? Number(hinted[1]) * 1000 + 500 : 3000);
+    const waitMs = Math.min(2500, hinted ? Number(hinted[1]) * 1000 + 250 : 1000);
     console.log(`  Provider busy (${busy[1]}), retrying in ${Math.round(waitMs / 1000)}s…`);
     await new Promise((resolve) => setTimeout(resolve, waitMs));
     return ask(request);

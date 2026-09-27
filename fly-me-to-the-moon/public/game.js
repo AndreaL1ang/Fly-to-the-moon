@@ -56,6 +56,7 @@ const state = {
   portrait: '',       // data URL of the main sprite, for dialogue boxes
   world: null,        // this character's themed trip (see themes.js)
   worldPromise: null, // the request for it, started the moment the character exists
+  journeyStarted: false,
   maxHp: 0,
   hp: 0,
   index: 0,           // position in LEVELS
@@ -294,6 +295,7 @@ function setCharacter(c) {
   state.character = c;
   state.maxHp = c.hp;
   state.stats = computeStats(c);
+  state.journeyStarted = false;
   requestWorld();
 }
 
@@ -306,7 +308,7 @@ function requestWorld() {
     .then((raw) => THEMES.normalize(raw))
     .catch(() => THEMES.normalize(null))
     .then((world) => {
-      if (state.character === character) {
+      if (state.character === character && !state.journeyStarted) {
         state.world = world;
         if ($('#screen-card').classList.contains('active')) renderTrip();
       }
@@ -400,14 +402,10 @@ function tripArt(draw, big) {
 function renderTrip() {
   const list = $('#card-trip');
   list.innerHTML = '';
-  const w = state.world;
-  if (!w) {
-    const li = document.createElement('li');
-    li.className = 'waiting';
-    li.textContent = 'Planning the route…';
-    list.appendChild(li);
-    return;
-  }
+  // Show a complete route immediately. Gemini can swap in the character's
+  // personalized version when it arrives, but the player never stares at a
+  // loading row or has to guess whether the game is stuck.
+  const w = state.world || THEMES.normalize(null);
   const keepsake = state.character.reason.keepsake || 'my keepsake';
   const rows = [
     [tripArt((s) => THEMES.vehicle(s, w.liftoff.vehicle, 58, 112, 0), true), 'Ride', w.liftoff.vehicle.name],
@@ -578,12 +576,12 @@ const input = R.makeInput($('#flight'));
 
 async function startJourney() {
   stopScene();
+  state.journeyStarted = true;
   if (!state.world) {
-    // Rare: the themed trip is still being planned. Give it a moment, then fly
-    // the generic trip rather than keep the player waiting.
-    $('#loading-text').textContent = 'Packing for the trip…';
+    // Give the personalized route one last tiny head start, then fly now.
+    $('#loading-text').textContent = 'Stuffing snacks in the glove box…';
     show('screen-loading');
-    const timeout = new Promise((resolve) => setTimeout(() => resolve(null), 30000));
+    const timeout = new Promise((resolve) => setTimeout(() => resolve(null), 2000));
     state.world = (await Promise.race([state.worldPromise, timeout])) || THEMES.normalize(null);
   }
   state.hp = state.maxHp;
