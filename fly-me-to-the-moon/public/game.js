@@ -265,7 +265,7 @@ async function generateCharacter() {
   } catch (err) {
     console.error(err);
     show('screen-draw');
-    showError('#draw-error', 'The game server did not respond. Check that node server.js is still running, then try again.');
+    showError('#draw-error', 'The moon radio went BONK. Refresh the page and try launching your doodle again.');
   }
 }
 

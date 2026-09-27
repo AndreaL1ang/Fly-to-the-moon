@@ -673,7 +673,7 @@ function sendJson(res, status, obj) {
   res.end(JSON.stringify(obj));
 }
 
-const server = http.createServer(async (req, res) => {
+async function handleRequest(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const route = routes[`${req.method} ${url.pathname}`];
 
@@ -696,16 +696,23 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': MIME[path.extname(filePath)] || 'application/octet-stream' });
     res.end(content);
   });
-});
+}
 
-server.listen(PORT, () => {
-  console.log(`\n  Draw Me to the Moon is running at http://localhost:${PORT}`);
-  console.log(
-    MOCK_MODE
-      ? `  Demo mode: no API key found for "${PROVIDER}", so characters and flight logs come from the built-in list.\n  Add a key to .env to turn on the AI.\n`
-      : `  AI provider: ${PROVIDER}\n`
-  );
-});
+if (require.main === module) {
+  const server = http.createServer(handleRequest);
+  server.listen(PORT, () => {
+    console.log(`\n  Draw Me to the Moon is running at http://localhost:${PORT}`);
+    console.log(
+      MOCK_MODE
+        ? `  Demo mode: no API key found for "${PROVIDER}", so characters and flight logs come from the built-in list.\n  Add a key to .env to turn on the AI.\n`
+        : `  AI provider: ${PROVIDER}\n`
+    );
+  });
+}
+
+// Vercel's /api entry points import this handler. Keeping the listener above
+// behind require.main preserves the same `node server.js` local workflow.
+module.exports = handleRequest;
 
 // Tiny .env reader so you don't need the dotenv package.
 function loadEnvFile(file) {
