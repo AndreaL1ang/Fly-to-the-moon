@@ -1,7 +1,7 @@
 {
-  "name": "fly-me-to-the-moon",
+  "name": "draw-me-to-the-moon",
   "version": "0.1.0",
-  "description": "Draw a hero, and AI turns them into an astronaut on a choose-your-path trip to the moon.",
+  "description": "Draw a hero, evolve them with new abilities, and fly the living doodle to the moon.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

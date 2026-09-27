@@ -1,4 +1,4 @@
-/* Fly Me to the Moon: an 8-bit night. Hard edges, loud colours, no curves. */
+/* Draw Me to the Moon: an 8-bit night. Hard edges, loud colours, no curves. */
 
 :root {
   --black: #000000;
@@ -378,6 +378,13 @@ legend { font-family: var(--pixel); font-size: 0.6rem; color: var(--pink); paddi
   .card { grid-template-columns: 1fr; }
 }
 
+.trip { margin-top: 1.1rem; }
+.trip-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.45rem; }
+.trip-list li { display: grid; grid-template-columns: 32px 1fr; gap: 0.7rem; align-items: center; color: var(--silver); }
+.trip-list li.waiting { grid-template-columns: 1fr; color: var(--lavender); animation: blink 1s steps(1) infinite; }
+.trip-list canvas { width: 32px; height: 32px; background: var(--navy); border: 2px solid var(--slate); }
+.trip-list strong { color: var(--white); font-weight: 400; }
+
 /* ---------- Briefing ---------- */
 
 .route-canvas {
@@ -461,10 +468,12 @@ legend { font-family: var(--pixel); font-size: 0.6rem; color: var(--pink); paddi
 /* ---------- Emergency sketch ---------- */
 
 .repair-sheet { margin-top: 1.1rem; }
+.evolve-hint { margin: 0 0 0.8rem; color: var(--yellow); }
 .repair-result { margin-top: 1.4rem; }
 .repair-read { margin: 0 0 0.6rem; font-size: 24px; }
 .repair-read span { color: var(--lavender); }
 .repair-read strong { color: var(--yellow); font-weight: 400; }
+.repair-effect { margin: 0.8rem 0 0; color: var(--green); }
 
 /* ---------- Finale ---------- */
 

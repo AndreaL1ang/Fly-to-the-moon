@@ -1,4 +1,4 @@
-// Fly Me to the Moon: game server
+// Draw Me to the Moon: game server
 // No npm install needed. Requires Node 18 or newer (for built-in fetch).
 // Run with:  node server.js   then open http://localhost:3000
 
@@ -26,14 +26,21 @@ const POWER_HELP = {
 };
 
 // ---------------------------------------------------------------------------
-// AI providers. Each one takes { system, prompt, image } and returns parsed JSON.
+// AI providers. Repair requests can include before/after images so the model
+// judges the player's new marks instead of re-interpreting the whole character.
 // To add a provider, write one function here and add it to the PROVIDERS map.
 // ---------------------------------------------------------------------------
 
-async function askGemini({ system, prompt, image }) {
+async function askGemini({ system, prompt, image, beforeImage }) {
   const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-  const parts = [{ text: prompt }];
+  const parts = [];
+  if (beforeImage) {
+    parts.push({ text: 'BEFORE: the character before the player added an upgrade.' });
+    parts.push({ inline_data: { mime_type: 'image/png', data: beforeImage } });
+    parts.push({ text: 'AFTER: the character with the player\'s new upgrade drawn on it.' });
+  }
   if (image) parts.push({ inline_data: { mime_type: 'image/png', data: image } });
+  parts.push({ text: prompt });
 
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -53,12 +60,17 @@ async function askGemini({ system, prompt, image }) {
   return parseJson(text);
 }
 
-async function askGroq({ system, prompt, image }) {
+async function askGroq({ system, prompt, image, beforeImage }) {
   const model = process.env.GROQ_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct';
   const userContent = image
     ? [
-        { type: 'text', text: prompt },
+        ...(beforeImage ? [
+          { type: 'text', text: 'BEFORE: the character before the player added an upgrade.' },
+          { type: 'image_url', image_url: { url: `data:image/png;base64,${beforeImage}` } },
+          { type: 'text', text: 'AFTER: the character with the player\'s new upgrade drawn on it.' },
+        ] : []),
         { type: 'image_url', image_url: { url: `data:image/png;base64,${image}` } },
+        { type: 'text', text: prompt },
       ]
     : prompt;
 
@@ -85,7 +97,19 @@ const PROVIDERS = { gemini: askGemini, groq: askGroq };
 async function askAI(request) {
   const ask = PROVIDERS[PROVIDER];
   if (!ask) throw new Error(`Unknown AI_PROVIDER "${PROVIDER}". Use gemini, groq, or mock.`);
-  return ask(request);
+  try {
+    return await ask(request);
+  } catch (err) {
+    // Free tiers are rate limited (429) or briefly overloaded (503). Wait the
+    // time the provider asks for, up to 25 seconds, and try exactly once more.
+    const busy = / (429|503):/.exec(err.message);
+    if (!busy) throw err;
+    const hinted = /try again in ([\d.]+)s/i.exec(err.message);
+    const waitMs = Math.min(25000, hinted ? Number(hinted[1]) * 1000 + 500 : 3000);
+    console.log(`  Provider busy (${busy[1]}), retrying in ${Math.round(waitMs / 1000)}s…`);
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    return ask(request);
+  }
 }
 
 // Models sometimes wrap JSON in ```fences``` or add a sentence. Dig the object out.
@@ -102,11 +126,11 @@ function parseJson(text) {
 // ---------------------------------------------------------------------------
 
 const TONE =
-  'The game is called Fly Me to the Moon. It is playful, warm, and suitable for all ages. ' +
-  'Keep writing short and punchy; players read it during a live demo.';
+  'The game is called Draw Me to the Moon. Use very simple words and tiny sentences. ' +
+  'Be warm, goofy, and specific. Prefer bonks, wobbles, snacks, odd noises, and silly comparisons. ' +
+  'Never sound poetic, formal, epic, or like an instruction manual. Keep every line quick to read.';
 
 function characterPrompt() {
-  const powerLines = POWERS.map((p) => `  - ${p}: ${POWER_HELP[p]}`).join('\n');
   return {
     system:
       `You are the character designer for a game. ${TONE} ` +
@@ -124,19 +148,10 @@ function characterPrompt() {
       '    "keepsake": "a small object they are carrying, 1-4 words",\n' +
       '    "goal": "what they will do on the moon with it, max 9 words",\n' +
       '    "line": "one heartfelt or funny sentence, in their own voice, on why the moon and why now"\n' +
-      '  },\n' +
-      '  "traits": [\n' +
-      '    { "name": "2-3 word trait", "kind": "strength" or "weakness",\n' +
-      '      "power": one of steady, agile, clever, lucky, heart,\n' +
-      '      "effect": "one short sentence on how it helps or hurts in flight",\n' +
-      '      "inspiredBy": "the specific part of the drawing that inspired it" }\n' +
-      '  ]\n' +
+      '  }\n' +
       '}\n' +
       'The reason must be personal and specific: a promise, a missing friend, a bet, a letter, ' +
       'a grandmother who pointed at the sky. Never just "for adventure".\n' +
-      'The "power" field decides what the trait actually does in play:\n' +
-      powerLines + '\n' +
-      'Give 2 or 3 traits with different powers: at least one strength and exactly one funny weakness. ' +
       'If the drawing is blank or hard to read, invent something whimsical about a mysterious scribble.',
   };
 }
@@ -144,18 +159,19 @@ function characterPrompt() {
 // After each level the character talks to the player about it. The game has
 // already decided what happened; the AI only puts it into the character's mouth,
 // so the words can never contradict what the player's hands did.
-const STAGE_BRIEF = {
-  liftoff: "lighting the rocket's three engine stages by timing a sweeping spark meter",
-  sky: 'flying up through storm clouds while the player steered you and grabbed stars',
-  whale: 'singing back to a giant space whale, note for note, as the player hit each note',
-  refuel: 'catching fuel cans dropped by a space station while dodging falling junk',
-  rocks: 'zapping and dodging asteroids on the way to the moon',
-  lander: 'the final landing on the moon in a tiny lander',
-};
+// `n` holds this character's themed names for the level (see themeNames in game.js).
+function stageBrief(stage, n) {
+  const x = n || {};
+  const briefs = {
+    wobble: `balancing ${x.vehicle || 'the rocket'} while it wobbled away from Earth`,
+    orbit: 'flying along the route the player drew through planets and star rings',
+    whale: `singing back to ${x.singer || 'a giant space whale'}, note for note, as the player hit each note`,
+  };
+  return briefs[stage] || stage;
+}
 
 function beatPrompt(body) {
   const c = body.character;
-  const traits = (c.traits || []).map((t) => `${t.name} (${t.kind}, ${t.power})`).join('; ') || 'none';
   const facts = (body.facts || []).map((f) => `- ${f}`).join('\n') || '- nothing notable';
   const band = body.score >= 80 ? 'went great' : body.score >= 50 ? 'was messy but okay' : 'went badly';
   return {
@@ -163,15 +179,15 @@ function beatPrompt(body) {
       `You are a drawing that has just come to life. The player drew you, and now they are steering you to the moon. ${TONE} ` +
       'Respond with JSON only.',
     prompt:
-      `You are ${c.name}, ${c.personality}. Your traits: ${traits}.\n` +
+      `You are ${c.name}, ${c.personality}.\n` +
       `Why you want to reach the moon: ${c.reason?.line || 'you never said.'}\n` +
-      `Level just played: ${STAGE_BRIEF[body.stage] || body.stage}.\n` +
+      `Level just played: ${stageBrief(body.stage, body.names)}.\n` +
       `The player's steering ${band} (score ${body.score} of 100). Exactly what happened:\n${facts}\n\n` +
-      'Talk straight to the player, calling them "you", about what they just did, in your own voice. ' +
-      'Stay strictly true to the facts above. Be warm even when it went badly. Mention one of your traits if it fits. ' +
+      'Talk to the player as "you". Use plain words. Add one goofy detail. ' +
+      'Stay true to the facts. Be nice even when it went badly. ' +
       'Return exactly this JSON shape:\n' +
       '{ "headline": "2-4 word arcade shout, like NICE FLYING! or MY POOR HEAD", ' +
-      '"outcome": "1-2 short sentences you say to the player" }',
+      '"outcome": "1 or 2 tiny, goofy sentences you say to the player, max 24 words total" }',
   };
 }
 
@@ -179,18 +195,78 @@ function repairPrompt(body) {
   const past = (body.history || []).map((h) => `- ${h.outcome}`).join('\n') || '- The trip has just begun.';
   return {
     system:
-      `You are a drawing that has come to life, flying to the moon, and the player just drew you a gadget to fix an emergency. ${TONE} ` +
-      'Study what is actually visible in the image. Reward practical ideas, but make strange ideas funny rather than simply rejecting them. ' +
+      `You are a drawing that has come to life, flying to the moon, and the player just drew a landing idea onto your body. ${TONE} ` +
+      'Compare BEFORE and AFTER. Identify the NEW marks the player added, not the original character. ' +
+      'Reward practical ideas, but make strange ideas useful and funny rather than rejecting them. ' +
       'Respond with JSON only, no other text.',
     prompt:
       `Emergency: ${body.challenge.prompt}\n` +
       `You are ${body.character.name}, ${body.character.personality}. HP: ${body.hp} of ${body.maxHp}.\n` +
       `Recent trip: ${past}\n\n` +
-      'Identify the main thing the player drew and decide how well it solves the emergency. ' +
-      'A sensible tool such as a wrench should work well. A surprising object such as a banana should create a specific funny result, and may still help a little. ' +
+      'Identify the main new body part or object and decide how well it helps the landing. ' +
+      'A surprising addition such as a banana must create a specific funny landing result. ' +
       'Return exactly this JSON shape:\n' +
-      '{ "object": "what the drawing looks like, max 5 words", "score": integer 0 to 100, ' +
-      '"hp_change": integer -20 to 20, "outcome": "2 short sentences you say to the player about how their gadget works or backfires" }',
+      '{ "object": "what the new marks look like, max 5 words", "score": integer 0 to 100, ' +
+      '"hp_change": integer -12 to 16, ' +
+      '"effect": "one tiny concrete sentence describing what the drawing does during the landing", ' +
+      '"outcome": "1 or 2 tiny, goofy sentences about the landing idea, max 24 words total" }',
+  };
+}
+
+// The pieces of pixel art the game can draw. The AI picks from these to build a
+// world for each character. Keep in sync with public/themes.js.
+const WORLD_VOCAB = {
+  icons: ['cloud', 'rock', 'star', 'heart', 'bone', 'fish', 'bird', 'ghost', 'bubble', 'gear', 'sock', 'book', 'candy',
+    'flower', 'note', 'crystal', 'can', 'wrench', 'cookie', 'balloon', 'leaf', 'coin'],
+  colors: ['red', 'orange', 'yellow', 'green', 'blue', 'pink', 'lavender', 'brown', 'silver', 'white', 'plum', 'forest', 'slate', 'peach'],
+  singers: ['whale', 'jellyfish', 'dog', 'cat', 'owl', 'robot'],
+  vehicles: ['rocket', 'teapot', 'bathtub', 'box', 'balloon'],
+  skies: ['day', 'dawn', 'sunset', 'night', 'space', 'candy', 'sea', 'forest'],
+  floors: ['clouds', 'grass', 'sand', 'water', 'neon', 'circuit', 'candy', 'ice', 'lava'],
+};
+
+// Builds the whole trip around one character: what they ride, what they meet,
+// what they collect. The mechanics never change; only who and what fills them.
+function worldPrompt(body) {
+  const c = body.character;
+  const v = WORLD_VOCAB;
+  return {
+    system:
+      `You are the level designer for a short drawing game. ${TONE} ` +
+      'A drawing has come to life and the player is flying it to the moon. You theme a wobble launch and a space duet ' +
+      'so the whole trip is about THIS character: their story, the person or thing they are going for, their keepsake, ' +
+      'their personality. Respond with JSON only.',
+    prompt:
+      `Character: ${c.name}, ${c.personality}. ${c.intro || ''}\n` +
+      `Why they are going: ${c.reason?.line || 'unknown'}\n` +
+      `They carry: ${c.reason?.keepsake || 'nothing'}. On the moon they want to: ${c.reason?.goal || 'see it'}.\n` +
+      'The two themed moments:\n' +
+      '1 wobble launch: the player balances a silly vehicle carrying the character away from Earth.\n' +
+      '2 space duet: a creature sings to them and the player taps the notes back.\n\n' +
+      `Art you may use (use these exact words): icons ${v.icons.join(', ')}; colors ${v.colors.join(', ')}; ` +
+      `singers ${v.singers.join(', ')}; vehicles ${v.vehicles.join(', ')}; skies ${v.skies.join(', ')}; floors ${v.floors.join(', ')}.\n\n` +
+      'Return exactly this JSON shape:\n' +
+      '{\n' +
+      '  "anchors": ["3 specific things from THIS character\'s story or identity, e.g. a name, a person, a place, the keepsake"],\n' +
+      '  "voice": { "ouch": "what they yell when hit, max 10 letters, e.g. YELP!", "yay": "what they yell when happy, max 10 letters" },\n' +
+      '  "liftoff": { "title": "2-4 words", "line": "what they say to the player before it, max 140 chars", ' +
+      '"vehicle": { "name": "the vehicle, starting with the", "kind": one of vehicles, "color": one of colors } },\n' +
+      '  "whale": { "title": "...", "line": "...", "singer": { "name": "who sings, starting with the or a name", "kind": one of singers, "color": one of colors }, "sound": "the sound they sing, one word, max 6 letters, e.g. AWOO" },\n' +
+      '  "keepsake": { "icon": the icon that looks most like their keepsake, "color": one of colors }\n' +
+      '}\n' +
+      'Rules:\n' +
+      '- Both moments must use at least one anchor in the title, line, vehicle, or singer.\n' +
+      '- Tie both moments to their reason, keepsake, or identity. The singer can be the one they miss.\n' +
+      '- Do NOT fall back on the generic trip (a rocket, a whale, storm clouds, stars, asteroids, fuel cans) unless it ' +
+      'genuinely belongs to their story. Every name should be specific, e.g. "the moon hound" not "the dog".\n' +
+      '- The voice words must sound like THIS character (a dog yelps, a knight says HUZZAH).\n' +
+      '- Pick icons that actually look like the names you give them.\n' +
+      '- Each line is spoken by the character to the player ("you"), in their own voice, mentions the things by name, ' +
+      'and tells the player what to do in that level. Keep it all-ages and warm.\n\n' +
+      'Example. For a dramatic knight whose reason is "Gran pointed at the moon and said go on then, and I have been ' +
+      'going on ever since" and who carries "a grandmother\'s brass button", a great answer is:\n' +
+      JSON.stringify({ anchors: ['Gran', "Gran's brass button", 'the dare'], ...MOCK_WORLDS['Sir Loopsalot'] }) + '\n' +
+      'Now do the same for the character above: every level built from THEIR anchors.',
   };
 }
 
@@ -236,9 +312,50 @@ function cleanRepair(raw) {
   return {
     object: str(raw.object, 60, 'a mysterious invention'),
     score: clamp(raw.score, 0, 100, 50),
-    hp_change: clamp(raw.hp_change, -20, 20, 0),
+    hp_change: clamp(raw.hp_change, -12, 16, 0),
+    effect: str(raw.effect, 140, 'It makes the landing less bonky.'),
     outcome: str(raw.outcome, 320, 'It rattles, glows, and somehow keeps the mission moving.'),
   };
+}
+
+// Anything missing or outside the art library falls back to the generic trip,
+// so a half-right answer still plays. Throws if the answer is mostly unusable.
+function cleanWorld(raw) {
+  if (!raw || typeof raw !== 'object') throw new Error('World was not an object');
+  const v = WORLD_VOCAB;
+  const pick = (x, list, fb) => (list.includes(x) ? x : fb);
+  const word = (x, fb) => (str(x, 10, fb).toUpperCase().replace(/[^A-Z0-9 !?'.-]/g, '') || fb);
+  const thing = (x, fb) => ({ name: str(x?.name, 40, fb.name), icon: pick(x?.icon, v.icons, fb.icon), color: pick(x?.color, v.colors, fb.color) });
+  const level = (id, fb) => ({ title: str(raw[id]?.title, 40, fb.title), line: str(raw[id]?.line, 160, fb.line) });
+  const base = GENERIC_WORLD;
+  const w = {
+    voice: { ouch: word(raw.voice?.ouch, 'OUCH!'), yay: word(raw.voice?.yay, 'YAY!') },
+    liftoff: { ...level('liftoff', base.liftoff), vehicle: {
+      name: str(raw.liftoff?.vehicle?.name, 40, base.liftoff.vehicle.name),
+      kind: pick(raw.liftoff?.vehicle?.kind, v.vehicles, 'rocket'),
+      color: pick(raw.liftoff?.vehicle?.color, v.colors, 'red'),
+    } },
+    sky: { ...level('sky', base.sky), sky: pick(raw.sky?.sky, v.skies, 'day'), floor: pick(raw.sky?.floor, v.floors, 'clouds'),
+      bad: thing(raw.sky?.bad, base.sky.bad), good: thing(raw.sky?.good, base.sky.good) },
+    whale: { ...level('whale', base.whale), sound: word(raw.whale?.sound, 'LA').slice(0, 6), singer: {
+      name: str(raw.whale?.singer?.name, 40, base.whale.singer.name),
+      kind: pick(raw.whale?.singer?.kind, v.singers, 'whale'),
+      color: pick(raw.whale?.singer?.color, v.colors, 'blue'),
+    } },
+    refuel: { ...level('refuel', base.refuel), station: str(raw.refuel?.station, 40, base.refuel.station),
+      good: thing(raw.refuel?.good, base.refuel.good), bad: thing(raw.refuel?.bad, base.refuel.bad) },
+    rocks: { ...level('rocks', base.rocks), sky: pick(raw.rocks?.sky, v.skies, 'space'), floor: pick(raw.rocks?.floor, v.floors, 'neon'),
+      bad: thing(raw.rocks?.bad, base.rocks.bad), good: thing(raw.rocks?.good, base.rocks.good) },
+    lander: level('lander', base.lander),
+    keepsake: { icon: pick(raw.keepsake?.icon, v.icons, 'star'), color: pick(raw.keepsake?.color, v.colors, 'yellow') },
+  };
+  const themed = ['liftoff', 'whale'].filter((id) => raw[id]?.title).length;
+  if (themed < 2) throw new Error('World was missing a themed moment');
+  // A world built from the stock pieces isn't about anyone. Reject it so the
+  // story-based fallback gets a go instead.
+  const stock = [w.liftoff.vehicle.kind === 'rocket', w.whale.singer.kind === 'whale'].filter(Boolean).length;
+  if (stock >= 2) throw new Error('World used only stock pieces');
+  return w;
 }
 
 // ---------------------------------------------------------------------------
@@ -248,11 +365,11 @@ function cleanRepair(raw) {
 const MOCK_CHARACTERS = [
   {
     name: 'Captain Scribbles', hp: 90, personality: 'brave but easily distracted',
-    intro: 'Captain Scribbles has stared at the moon every night for eleven years and has finally had enough of waving.',
+    intro: 'Captain Scribbles is tired of waving at the moon. Today, the moon gets a visit.',
     reason: {
       keepsake: 'a chewed dog collar',
       goal: 'bury it where the Earth never sets',
-      line: 'Rocket the dog watched the moon with me every night, and I promised her a proper view one day.',
+      line: 'Rocket the dog loved the moon. I promised to sniff it for her.',
     },
     traits: [
       { name: 'Big Heart', kind: 'strength', power: 'heart', effect: 'Anything alive out there ends up on your side.', inspiredBy: 'the round shape in the middle' },
@@ -262,11 +379,11 @@ const MOCK_CHARACTERS = [
   },
   {
     name: 'Sir Loopsalot', hp: 120, personality: 'dramatic and fearless',
-    intro: 'Sir Loopsalot has announced the voyage to everyone in town, twice, including the postman.',
+    intro: 'Sir Loopsalot told everyone about this trip. Even a confused pigeon.',
     reason: {
       keepsake: "a grandmother's brass button",
       goal: 'finish the dare she set him at seven',
-      line: 'Gran pointed at the moon and said "go on then", and I have been going on ever since.',
+      line: 'Gran pointed at the moon and said, "Go on then." So... I am going.',
     },
     traits: [
       { name: 'Iron Grip', kind: 'strength', power: 'steady', effect: 'Holds a line however hard it shakes.', inspiredBy: 'the thick outlines' },
@@ -276,32 +393,162 @@ const MOCK_CHARACTERS = [
   },
 ];
 
-// In the character's own voice, talking to the player.
+// The trip before anything is themed. Also the fallback for any missing piece.
+const GENERIC_WORLD = {
+  voice: { ouch: 'OUCH!', yay: 'YAY!' },
+  liftoff: { title: 'Light the rocket', line: "Okay, I'm holding on! Light the engines for me. Tap when the spark hits the gold!",
+    vehicle: { name: 'the rocket', kind: 'rocket', color: 'red' } },
+  sky: { title: 'Up through the clouds', line: 'Whoa, clouds! The dark ones zap. Steer me around them, and grab every star!', sky: 'day', floor: 'clouds',
+    bad: { name: 'storm clouds', icon: 'cloud', color: 'slate' }, good: { name: 'stars', icon: 'star', color: 'yellow' } },
+  whale: { title: 'Sing with the whale', line: 'Is that... a WHALE? It is singing to us! Help me sing back. Hit every note!', sound: 'LA',
+    singer: { name: 'the space whale', kind: 'whale', color: 'blue' } },
+  refuel: { title: 'Catch the fuel', line: 'A space station! They are tossing us fuel! Move me under the cans. Not the junk!', station: 'the halfway station',
+    good: { name: 'fuel cans', icon: 'can', color: 'green' }, bad: { name: 'bits of junk', icon: 'wrench', color: 'slate' } },
+  rocks: { title: 'Zap through the rocks', line: 'Rocks. So many rocks. Tap to zap them before they bonk me!', sky: 'space', floor: 'neon',
+    bad: { name: 'asteroids', icon: 'rock', color: 'brown' }, good: { name: 'ice crystals', icon: 'crystal', color: 'blue' } },
+  lander: { title: 'Land on the moon', line: 'There it is, the MOON! Hold to slow us down, and put me on the flashing pad. Gently!' },
+  keepsake: { icon: 'star', color: 'yellow' },
+};
+
+// Hand-themed trips for the built-in characters, so demo mode shows the idea off.
+const MOCK_WORLDS = {
+  'Captain Scribbles': {
+    voice: { ouch: 'YELP!', yay: 'GOOD DOG!' },
+    liftoff: { title: 'Light the kennel', line: "Rocket's old kennel, now with engines! Tap when the spark hits the gold, and we're off!",
+      vehicle: { name: 'the cardboard kennel', kind: 'box', color: 'red' } },
+    sky: { title: 'Chase the gulls', line: 'Seagulls! Rocket barked at every single one. Steer me round them and grab the biscuits!', sky: 'dawn', floor: 'clouds',
+      bad: { name: 'squawking seagulls', icon: 'bird', color: 'white' }, good: { name: 'dog biscuits', icon: 'bone', color: 'peach' } },
+    whale: { title: 'Howl at the moon', line: 'A giant space dog is howling... it sounds just like Rocket! Howl back with me, note for note!', sound: 'AWOO',
+      singer: { name: 'the moon hound', kind: 'dog', color: 'silver' } },
+    refuel: { title: 'Treats from the pound', line: 'The Space Pound is tossing treats! Catch the bones, but dodge the bath-time socks. I HATE bath time.',
+      station: 'the Space Pound', good: { name: 'juicy bones', icon: 'bone', color: 'white' }, bad: { name: 'bath-time socks', icon: 'sock', color: 'blue' } },
+    rocks: { title: 'Fetch in the belt', line: 'Meteors everywhere! Zap them, and grab the tennis balls. Rocket would have LOVED this bit.', sky: 'night', floor: 'neon',
+      bad: { name: 'grumpy meteors', icon: 'rock', color: 'brown' }, good: { name: 'tennis balls', icon: 'coin', color: 'green' } },
+    lander: { title: 'Down to the moon', line: "There's the moon, Rocket! Hold to slow us down and land us on the flashing pad. Gently!" },
+    keepsake: { icon: 'heart', color: 'red' },
+  },
+  'Sir Loopsalot': {
+    voice: { ouch: 'GADZOOKS!', yay: 'HUZZAH!' },
+    liftoff: { title: "Gran's teapot launch", line: "Gran's teapot, fitted with rockets, as she would have wanted! Light it on the gold, squire!",
+      vehicle: { name: "Gran's old teapot", kind: 'teapot', color: 'blue' } },
+    sky: { title: 'The crow gauntlet', line: "Crows! The very ones that pinched Gran's buttons. Dodge them, and grab every button back!", sky: 'sunset', floor: 'grass',
+      bad: { name: 'nosy crows', icon: 'bird', color: 'slate' }, good: { name: 'lost buttons', icon: 'coin', color: 'yellow' } },
+    whale: { title: 'Duet with Duchess', line: "Duchess? Gran's old cat, in SPACE? She wants a duet. Sing back with me, note for note!", sound: 'MEOW',
+      singer: { name: 'Duchess the cat', kind: 'cat', color: 'lavender' } },
+    refuel: { title: "Gran's floating kitchen", line: "Gran's kitchen, floating in space! Catch the cookies, but mind the recipe books. They are HEAVY.",
+      station: "Gran's floating kitchen", good: { name: 'warm cookies', icon: 'cookie', color: 'peach' }, bad: { name: 'heavy recipe books', icon: 'book', color: 'plum' } },
+    rocks: { title: 'Joust the meteors', line: 'Dastardly meteors bar our path! Zap them, and seize the gems. For Gran!', sky: 'space', floor: 'neon',
+      bad: { name: 'dastardly meteors', icon: 'rock', color: 'brown' }, good: { name: 'glimmering gems', icon: 'crystal', color: 'pink' } },
+    lander: { title: 'Finish the dare', line: "The moon! Gran, I'm nearly there. Hold to slow us, and set us on the flashing pad!" },
+    keepsake: { icon: 'coin', color: 'yellow' },
+  },
+};
+
+// For any other character with no AI available: read their story for clues and
+// theme the trip from those. Earlier rules win when two want the same slot.
+const WORLD_CLUES = [
+  [/\b(dog|puppy|pup|bark|woof|collar)\b/, { skyGood: ['dog treats', 'bone', 'peach'], singer: ['the moon hound', 'dog', 'silver', 'AWOO'], yay: 'WOOF!' }],
+  [/\b(cat|kitten|kitty|meow|purr)\b/, { skyGood: ['fish snacks', 'fish', 'orange'], singer: ['the space cat', 'cat', 'lavender', 'MEOW'], yay: 'PURR!' }],
+  [/\b(sea|ocean|fish|sail|boat|beach|shell|swim)\b/, { skyGood: ['little fish', 'fish', 'blue'], singer: ['the space whale', 'whale', 'blue', 'OOOO'], vehicle: ['the bathtub boat', 'bathtub', 'blue'], sky: 'sea', floor: 'water' }],
+  [/\b(gran|granny|grandma|grandmother|nan|nana|kitchen|cook|bake|baking)\b/, { refuel: ['the floating kitchen', 'warm cookies', 'cookie', 'peach'], vehicle: ['the flying teapot', 'teapot', 'blue'] }],
+  [/\b(music|song|sing|singer|guitar|piano|band|melody)\b/, { skyGood: ['music notes', 'note', 'yellow'], singer: ['the singing robot', 'robot', 'silver', 'BEEP'] }],
+  [/\b(flower|garden|plant|tree|forest|park|leaf)\b/, { skyGood: ['flowers', 'flower', 'pink'], skyBad: ['swirling leaves', 'leaf', 'green'], sky: 'forest', floor: 'grass' }],
+  [/\b(book|school|read|reading|library|teacher|homework)\b/, { skyBad: ['flying homework', 'book', 'plum'], skyGood: ['gold stars', 'star', 'yellow'] }],
+  [/\b(robot|machine|computer|code|engine|invent|inventor)\b/, { rocksBad: ['rusty gears', 'gear', 'orange'], singer: ['the old satellite', 'robot', 'silver', 'BEEP'], floor: 'circuit' }],
+  [/\b(ghost|spooky|haunted|dark|night)\b/, { skyBad: ['grumpy ghosts', 'ghost', 'white'], sky: 'night' }],
+  [/\b(candy|sweet|sweets|sugar|chocolate|cake)\b/, { skyGood: ['sweets', 'candy', 'pink'], sky: 'candy', floor: 'candy' }],
+  [/\b(balloon|party|birthday|circus)\b/, { vehicle: ['the party balloon', 'balloon', 'pink'], skyGood: ['balloons', 'balloon', 'red'] }],
+  [/\b(bread|toast|toaster|baker|bakery|cheese|pizza|sandwich|food|breakfast|butter)\b/, { skyGood: ['cheese crumbs', 'cookie', 'yellow'], refuel: ['the flying bakery', 'warm buns', 'cookie', 'peach'], vehicle: ['the toast rocket', 'box', 'orange'] }],
+  [/\b(bird|feather|wing|wings|nest|owl)\b/, { skyGood: ['shiny feathers', 'leaf', 'white'], singer: ['the night owl', 'owl', 'brown', 'HOOT'] }],
+  [/\b(snow|ice|winter|cold|frozen|penguin)\b/, { skyBad: ['flying snowballs', 'bubble', 'white'], floor: 'ice' }],
+  [/\b(ball|football|soccer|sport|tennis|goal)\b/, { skyGood: ['bouncy balls', 'coin', 'green'] }],
+  [/\b(love|heart|sister|brother|mum|mom|mother|dad|father|friend|promise)\b/, { skyGood: ['little hearts', 'heart', 'pink'] }],
+];
+
+const KEEPSAKE_CLUES = [
+  [/button|coin|medal|penny|badge/, 'coin', 'yellow'], [/letter|book|photo|diary|card|map/, 'book', 'white'],
+  [/flower|rose|daisy/, 'flower', 'pink'], [/sock|mitten|glove|scarf/, 'sock', 'red'], [/heart|locket/, 'heart', 'red'],
+  [/bone|collar/, 'bone', 'white'], [/cookie|biscuit/, 'cookie', 'peach'], [/shell|fish/, 'fish', 'orange'],
+  [/note|song|music|harmonica/, 'note', 'yellow'], [/crystal|gem|ring|stone|marble/, 'crystal', 'blue'],
+  [/balloon/, 'balloon', 'red'], [/leaf|acorn|seed/, 'leaf', 'green'], [/star/, 'star', 'yellow'],
+];
+
+function mockWorld(body) {
+  const c = body.character || {};
+  if (MOCK_WORLDS[c.name]) return copy(MOCK_WORLDS[c.name]);
+  const w = copy(GENERIC_WORLD);
+  const text = [c.name, c.personality, c.intro, c.reason?.line, c.reason?.keepsake, c.reason?.goal].join(' ').toLowerCase();
+  const taken = new Set();
+  const set = (slot, fn) => { if (!taken.has(slot)) { taken.add(slot); fn(); } };
+  for (const [re, clue] of WORLD_CLUES) {
+    if (!re.test(text)) continue;
+    if (clue.skyGood) set('skyGood', () => { const [name, icon, color] = clue.skyGood; w.sky.good = { name, icon, color }; });
+    if (clue.skyBad) set('skyBad', () => { const [name, icon, color] = clue.skyBad; w.sky.bad = { name, icon, color }; });
+    if (clue.rocksBad) set('rocksBad', () => { const [name, icon, color] = clue.rocksBad; w.rocks.bad = { name, icon, color }; });
+    if (clue.singer) set('singer', () => { const [name, kind, color, sound] = clue.singer; w.whale.singer = { name, kind, color }; w.whale.sound = sound; });
+    if (clue.vehicle) set('vehicle', () => { const [name, kind, color] = clue.vehicle; w.liftoff.vehicle = { name, kind, color }; });
+    if (clue.refuel) set('refuel', () => { const [station, name, icon, color] = clue.refuel; w.refuel.station = station; w.refuel.good = { name, icon, color }; });
+    if (clue.sky) set('sky', () => { w.sky.sky = clue.sky; });
+    if (clue.floor) set('floor', () => { w.sky.floor = clue.floor; });
+    if (clue.yay) set('yay', () => { w.voice.yay = clue.yay; });
+  }
+  const keep = (c.reason?.keepsake || '').toLowerCase();
+  const k = KEEPSAKE_CLUES.find(([re]) => re.test(keep));
+  if (k) w.keepsake = { icon: k[1], color: k[2] };
+
+  // Lines written from the chosen names, so they always match what's on screen.
+  const cap = (x) => x[0].toUpperCase() + x.slice(1);
+  w.liftoff.title = `Launch ${w.liftoff.vehicle.name}`;
+  w.liftoff.line = `${cap(w.liftoff.vehicle.name)} is ready! Tap when the spark hits the gold, and we're off to the moon!`;
+  w.sky.line = `Look out, ${w.sky.bad.name}! Steer me around them, and grab the ${w.sky.good.name}!`;
+  w.whale.title = `Sing with ${w.whale.singer.name}`;
+  w.whale.line = `Listen... it's ${w.whale.singer.name}, singing to us! Help me sing back, note for note!`;
+  w.refuel.title = `Catch the ${w.refuel.good.name}`;
+  w.refuel.line = `${cap(w.refuel.station)}! Catch the ${w.refuel.good.name}, and keep me away from the ${w.refuel.bad.name}!`;
+  w.rocks.line = `Here come the ${w.rocks.bad.name}! Tap to zap them, and grab the ${w.rocks.good.name}!`;
+  // Even with no clues at all, the last stretch is still about them.
+  const carrying = (c.reason?.keepsake || '').trim();
+  if (carrying) w.lander.line = `There's the moon! Hold to slow us down and land me on the pad. I've got ${carrying} ready.`;
+  return w;
+}
+
+// In the character's own voice, talking to the player. {bad}, {good}, {singer},
+// {vehicle} and {station} are filled with this character's themed names.
 const MOCK_BEATS = {
+  wobble: {
+    high: { headline: 'STABLE-ISH!', outcome: 'You tamed the wobble! Only my socks screamed.' },
+    mid: { headline: 'WIGGLE POWER!', outcome: 'We leaned. We bonked. We still escaped Earth!' },
+    low: { headline: 'WOBBLE BONK!', outcome: 'That rocket danced like jelly. Somehow, up happened.' },
+  },
+  orbit: {
+    high: { headline: 'PRETTY SPACE ROAD!', outcome: 'Your line scooped up every shiny ring. Very professional spaghetti!' },
+    mid: { headline: 'MOON-ISH!', outcome: 'A few planet bonks, but your road went mostly moonward.' },
+    low: { headline: 'LOST WITH STYLE!', outcome: 'Your line visited several planets with its face. The moon is still over there!' },
+  },
   liftoff: {
-    high: { headline: 'WE HAVE LIFTOFF!', outcome: 'Three perfect sparks! You made that look easy, and my stomach is still on the launch pad.' },
-    mid: { headline: 'UP WE GO-ISH', outcome: 'One spark fizzled, but you got us up anyway. I am choosing to call that style.' },
-    low: { headline: 'BUMPY START!', outcome: 'The rocket coughed the whole way up, but we are off the ground! I believe in you. Mostly.' },
+    high: { headline: 'ZOOM! NO BONKS!', outcome: 'Three perfect sparks! My stomach stayed on Earth, but the rest of me is fine.' },
+    mid: { headline: 'UP-ISH!', outcome: 'One spark went pfft. {vehicle} still went WHOOSH!' },
+    low: { headline: 'WOBBLE LAUNCH!', outcome: '{vehicle} coughed a lot. We are flying anyway. Probably on purpose.' },
   },
   sky: {
-    high: { headline: 'NICE FLYING!', outcome: 'You slid me right between those grumpy clouds. I did not even get damp!' },
-    mid: { headline: 'A LITTLE SOGGY', outcome: 'A couple of clouds got me square in the face. Still, you kept us climbing!' },
-    low: { headline: 'MY POOR HEAD', outcome: 'I think I hugged every storm cloud up there. Can we steer AROUND them next time?' },
+    high: { headline: 'ZERO FACE BONKS!', outcome: 'You dodged the {bad}! I grabbed the {good} like a hungry vacuum.' },
+    mid: { headline: 'BONK-ISH!', outcome: 'Some {bad} hugged my face. We kept going.' },
+    low: { headline: 'BONK FEST!', outcome: 'I met every {bad} with my head. My head votes no.' },
   },
   whale: {
-    high: { headline: 'WHAT A DUET!', outcome: 'You hit every note and the whale sang with us! I think we made a friend the size of a town.' },
-    mid: { headline: 'SORT OF IN TUNE', outcome: 'We lost a few notes, but the whale was polite about it and let us pass.' },
-    low: { headline: 'OOPS, OFF-KEY', outcome: 'We sang all the wrong notes and the whale swam off in a huff. At least it moved out of the way!' },
+    high: { headline: 'SPACE BANGER!', outcome: 'You hit every note! {singer} did a happy wiggle.' },
+    mid: { headline: 'CLOSE ENOUGH!', outcome: 'We missed a few notes. {singer} politely pretended not to notice.' },
+    low: { headline: 'MUSICAL BONK!', outcome: 'Those were definitely noises. {singer} left very quickly.' },
   },
   refuel: {
-    high: { headline: 'TANKS FULL!', outcome: 'You caught every can like a pro. I feel brand new!' },
-    mid: { headline: 'GOOD ENOUGH!', outcome: 'We got some fuel and only a little junk on my head. I will take it.' },
-    low: { headline: 'JUNK ON MY HEAD', outcome: 'That was mostly wrenches, and one of them was very pointy. We can still make it... I think.' },
+    high: { headline: 'FULL TUMMY!', outcome: 'So many {good}! I could zoom through a wall. I will not.' },
+    mid: { headline: 'SNACK SECURED!', outcome: 'Some {good}, some {bad}. A balanced space lunch.' },
+    low: { headline: 'JUNK BUFFET!', outcome: 'Mostly {bad}. Crunchy. Bad flavor.' },
   },
   rocks: {
-    high: { headline: 'ZAP ZAP ZAP!', outcome: 'You blasted a road straight through those rocks! Not one scratch on me.' },
-    mid: { headline: 'A FEW BONKS', outcome: 'Some rocks bonked me, but you zapped plenty more. The moon is so close now!' },
-    low: { headline: 'SO MANY ROCKS', outcome: 'I got bonked a lot. Like, a LOT. But look — the moon is right there!' },
+    high: { headline: 'ZAP ZAP YIPPEE!', outcome: 'You toasted the {bad}! Not one butt-bonk.' },
+    mid: { headline: 'A FEW BONKS', outcome: 'Some {bad} bonked me. The moon is still right there!' },
+    low: { headline: 'BONK CITY!', outcome: 'The {bad} used me as a drum. But hey—moon!' },
   },
   lander: {
     high: { headline: 'FEATHER SOFT!', outcome: 'You set us down so gently the moon dust did not even notice. We are HERE!' },
@@ -321,16 +568,21 @@ function mockCharacter() {
 }
 
 function mockBeat(body) {
-  const set = MOCK_BEATS[body.stage] || MOCK_BEATS.storm;
-  return copy(body.score >= 80 ? set.high : body.score >= 50 ? set.mid : set.low);
+  const set = MOCK_BEATS[body.stage] || MOCK_BEATS.sky;
+  const beat = copy(body.score >= 80 ? set.high : body.score >= 50 ? set.mid : set.low);
+  const given = Object.entries(body.names || {}).filter(([, v]) => typeof v === 'string' && v.trim());
+  const n = { bad: 'storm clouds', good: 'stars', singer: 'the space whale', vehicle: 'the rocket', station: 'the station', ...Object.fromEntries(given) };
+  const out = beat.outcome.replace(/\{(bad|good|singer|vehicle|station)\}/g, (_, k) => String(n[k]).slice(0, 40));
+  beat.outcome = out[0].toUpperCase() + out.slice(1);
+  return beat;
 }
 
 function mockRepair(body) {
   return body.challenge?.id === 'landing'
-    ? { object: 'a moon-pointing doodad', score: 72, hp_change: 8,
-        outcome: 'Ooh, it points straight at the flattest patch of moon! I have no idea how it works, and I love it.' }
-    : { object: 'a suspicious space tool', score: 68, hp_change: 6,
-        outcome: 'You wedged it right into the engine and the sparks stopped! It hums the birthday song now, but it works.' };
+    ? { object: 'a moon-pointing doodad', score: 72, hp_change: 8, effect: 'It finds a soft spot to land.',
+        outcome: 'It points at the moon and goes BEEP. Good enough for me!' }
+    : { object: 'a suspicious space tool', score: 68, hp_change: 6, effect: 'It makes the engine wobble less.',
+        outcome: 'The sparks stopped! It smells like toast, but it works.' };
 }
 
 // ---------------------------------------------------------------------------
@@ -360,6 +612,18 @@ const routes = {
       mockCharacter
     ),
 
+  // A whole trip themed around one character. Called once, in the background,
+  // while the character wakes up, so the player never waits on it.
+  'POST /api/world': async (body) =>
+    withFallback(
+      'world',
+      async () => {
+        if (!body.character) throw new Error('World needs a character');
+        return cleanWorld(await askAI(worldPrompt(body)));
+      },
+      () => mockWorld(body)
+    ),
+
   // Narration for a level the player has already played. The score and the
   // facts come from the game, not the model, so the story always matches play.
   'POST /api/beat': async (body) =>
@@ -378,7 +642,7 @@ const routes = {
       async () => {
         if (!body.image) throw new Error('No repair image sent');
         if (!body.challenge || !body.character) throw new Error('Repair context missing');
-        return cleanRepair(await askAI({ ...repairPrompt(body), image: body.image }));
+        return cleanRepair(await askAI({ ...repairPrompt(body), image: body.image, beforeImage: body.beforeImage }));
       },
       () => mockRepair(body)
     ),
@@ -435,7 +699,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`\n  Fly Me to the Moon is running at http://localhost:${PORT}`);
+  console.log(`\n  Draw Me to the Moon is running at http://localhost:${PORT}`);
   console.log(
     MOCK_MODE
       ? `  Demo mode: no API key found for "${PROVIDER}", so characters and flight logs come from the built-in list.\n  Add a key to .env to turn on the AI.\n`

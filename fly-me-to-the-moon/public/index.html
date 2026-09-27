@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Fly Me to the Moon</title>
+  <title>Draw Me to the Moon</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet" />
@@ -16,9 +16,9 @@
     <section id="screen-draw" class="screen active" aria-labelledby="title">
       <header class="masthead">
         <canvas id="title-moon" class="pixel title-moon" aria-hidden="true"></canvas>
-        <h1 id="title">Fly Me<br />to the Moon</h1>
+        <h1 id="title">Draw Me<br />to the Moon</h1>
       </header>
-      <p class="lede">Draw someone. Anything counts: a cat, a toaster, a stick figure with a jetpack. When you're done, they wake up, and they'll have a favour to ask.</p>
+      <p class="lede">Draw somebody. They wake up. You wobble, scribble, and sing your way to the moon.</p>
 
       <div class="sheet">
         <canvas id="doodle" width="480" height="480" aria-label="Drawing area. Draw your character here."></canvas>
@@ -43,14 +43,14 @@
       <p id="draw-error" class="error" role="alert" hidden></p>
       <div class="actions">
         <button id="btn-ai" class="btn primary" disabled>Bring them to life</button>
-        <button id="btn-manual" class="btn ghost">Set my own stats</button>
+        <button id="btn-manual" class="btn ghost" hidden>Set my own stats</button>
       </div>
     </section>
 
     <!-- 2. Manual stats -->
     <section id="screen-manual" class="screen" aria-labelledby="manual-title">
       <h2 id="manual-title">Build your character</h2>
-      <p class="lede">You have <strong id="points-left">6 points</strong> to spend. Extra HP and strengths cost a point each. A weakness earns one back. Each trait has a <em>power</em>, and the levels test those powers.</p>
+      <p class="lede">Spend <strong id="points-left">6 points</strong>. Strong stuff costs points. Silly weaknesses give points back.</p>
 
       <form id="manual-form" class="panel paper-form" novalidate>
         <label>Name
@@ -123,12 +123,11 @@
             <p class="reason-meta">Carrying <strong id="card-keepsake"></strong></p>
           </div>
 
-          <ul id="card-traits" class="traits"></ul>
-          <div class="powers">
-            <p class="label">Flight rating</p>
-            <div id="card-powers" class="power-chips"></div>
-          </div>
         </div>
+      </article>
+      <article class="panel trip">
+        <p class="label">Your trip</p>
+        <ul id="card-trip" class="trip-list" aria-live="polite"></ul>
       </article>
       <div class="actions">
         <button id="btn-launch" class="btn primary">Let's go!</button>
@@ -150,12 +149,10 @@
         </div>
       </div>
       <div class="panel brief-card">
-        <p class="label">Mission</p>
+        <p class="label">Your job</p>
         <p id="brief-objective" class="brief-line"></p>
-        <p class="label">Controls</p>
+        <p class="label">How</p>
         <p id="brief-hint" class="brief-line"></p>
-        <p class="label">Traits in play</p>
-        <ul id="brief-traits" class="brief-traits"></ul>
       </div>
       <div class="actions">
         <button id="btn-brief-go" class="btn primary">Start</button>
@@ -202,10 +199,10 @@
       </div>
     </section>
 
-    <!-- 9. Mid-flight drawing emergency -->
+    <!-- 9. Mid-flight character evolution -->
     <section id="screen-repair" class="screen" aria-labelledby="repair-title">
-      <p class="kicker">Emergency!</p>
-      <h2 id="repair-title">Draw the fix</h2>
+      <p class="kicker">Draw. Test. Evolve.</p>
+      <h2 id="repair-title">Draw the landing</h2>
       <div id="repair-dialog" class="dialog">
         <img class="dialog-portrait pixel" alt="" />
         <div class="dialog-body">
@@ -215,7 +212,8 @@
       </div>
 
       <div class="sheet repair-sheet">
-        <canvas id="repair-doodle" width="480" height="360" aria-label="Drawing area. Draw a gadget to fix the emergency."></canvas>
+        <p class="evolve-hint">Draw on your character. Whatever you add becomes the landing plan. Yes, even a potato.</p>
+        <canvas id="repair-doodle" width="480" height="360" aria-label="Drawing area. Add something that helps your character land."></canvas>
         <div class="tools" role="toolbar" aria-label="Repair drawing tools">
           <div class="swatches repair-swatches">
             <button class="swatch active" data-color="#1B2250" style="--c:#1B2250" aria-label="Ink"></button>
@@ -229,7 +227,7 @@
             <button id="repair-tool-size" class="tool" aria-pressed="false">Thick</button>
             <button id="repair-tool-eraser" class="tool" aria-pressed="false">Eraser</button>
             <button id="repair-tool-undo" class="tool">Undo</button>
-            <button id="repair-tool-clear" class="tool">Clear</button>
+            <button id="repair-tool-clear" class="tool">Reset doodle</button>
           </div>
         </div>
       </div>
@@ -237,13 +235,14 @@
       <p id="repair-error" class="error" role="alert" hidden></p>
       <div id="repair-result" class="panel repair-result" hidden aria-live="polite">
         <p class="repair-read"><span>AI sees:</span> <strong id="repair-object"></strong></p>
+        <p id="repair-effect" class="repair-effect"></p>
         <div class="score-row">
-          <div class="score-box"><span id="repair-score"></span><small>repair</small></div>
+          <div class="score-box"><span id="repair-score"></span><small>idea</small></div>
           <span id="repair-delta" class="delta"></span>
         </div>
       </div>
       <div class="actions">
-        <button id="btn-repair-submit" class="btn primary" disabled>Give it to them</button>
+        <button id="btn-repair-submit" class="btn primary" disabled>Try this landing</button>
         <button id="btn-repair-continue" class="btn primary" hidden>Back to the flight</button>
       </div>
     </section>
@@ -272,6 +271,7 @@
   </main>
 
   <script src="retro.js"></script>
+  <script src="themes.js"></script>
   <script src="minigames.js"></script>
   <script src="game.js"></script>
 </body>

@@ -1,4 +1,4 @@
-// Fly Me to the Moon: game logic
+// Draw Me to the Moon: game logic
 // draw -> (manual) -> they wake up and ask for your help -> character sheet
 //      -> [brief -> level -> they tell you how it went] x N -> the moon -> THE END
 //
@@ -14,34 +14,30 @@ const $ = (sel) => document.querySelector(sel);
 // `hp` is the range that level can swing: perfect play earns the high number,
 // a total mess costs the low one.
 const LEVELS = [
-  { game: 'liftoff', stage: 'Launch pad', kicker: 'Level 1 · Launch pad', progress: 0.1, hp: [-18, 6] },
-  { repair: 'engine', progress: 0.18 },
-  { game: 'sky', stage: 'The sky', kicker: 'Level 2 · The sky', progress: 0.34, hp: [-26, 6] },
-  { game: 'whale', stage: 'Deep space', kicker: 'Level 3 · Deep space', progress: 0.5, hp: [-22, 10] },
-  { game: 'refuel', stage: 'Halfway station', kicker: 'Level 4 · Halfway station', progress: 0.64, hp: [-8, 22] },
-  { game: 'rocks', stage: 'Asteroid belt', kicker: 'Level 5 · Asteroid belt', progress: 0.82, hp: [-28, 6] },
-  { repair: 'landing', progress: 0.9 },
-  { game: 'lander', stage: 'The moon', kicker: 'Level 6 · The moon', progress: 1, hp: [-30, 8] },
+  { game: 'wobble', stage: 'Wobble launch', kicker: 'Part 1 · Wobble launch', progress: 0.22, hp: [-16, 8] },
+  { game: 'orbit', stage: 'Orbit painter', kicker: 'Part 2 · Orbit painter', progress: 0.58, hp: [-20, 10] },
+  { game: 'whale', stage: 'Space duet', kicker: 'Part 3 · Space duet', progress: 0.82, hp: [-18, 10] },
+  { repair: 'landing', progress: 1 },
 ];
 
 // `prompt` goes to the AI judge; `line` is what the character says to you.
 const REPAIR_CHALLENGES = {
   engine: {
     id: 'engine',
-    title: 'The engine snapped',
-    prompt: 'The engine coupler snapped and is coughing sparks. The player must draw something that could hold it together until space.',
-    line: 'Help! The engine just snapped! Draw me something, anything, to hold it together!',
+    title: 'Draw an upgrade',
+    prompt: 'The engine coupler snapped and is coughing sparks. The player must add something to the character that helps them regain control and keep flying.',
+    line: 'Uh-oh. The engine went KER-CHUNK. Draw something on me to help. Wings? Arms? A giant spoon?',
   },
   landing: {
     id: 'landing',
-    title: 'The scanner floated off',
-    prompt: 'The landing scanner has floated away. The player must draw something that can guide the ship safely down to the moon.',
-    line: 'Uh oh. The landing scanner floated away! Can you draw me something to guide us down?',
+    title: 'One last doodle',
+    prompt: 'The landing scanner has floated away. The player must add something to the character that helps them sense, steer, or land safely on the moon.',
+    line: 'The moon is right there! Draw one last thing to help me land. Big feet? A parachute? Tiny ducks?',
   },
 };
 
 // The very last thing your character says to you.
-const FINAL_LINE = 'Thank you for flying me to the moon. This is so beautiful.';
+const FINAL_LINE = 'We made it! The moon is dusty, weird, and perfect. Thank you for drawing me.';
 
 const POINT_BUDGET = 6;
 const BASE_HP = 50;
@@ -49,35 +45,6 @@ const HP_PER_POINT = 25;
 
 const POWERS = ['steady', 'agile', 'clever', 'lucky', 'heart'];
 const POWER_LABEL = { steady: 'Steady', agile: 'Agile', clever: 'Clever', lucky: 'Lucky', heart: 'Heart' };
-
-// What a trait power concretely does in each level. [as a strength, as a weakness]
-// These are the real rules the levels apply, written out so the player sees them.
-const POWER_NOTES = {
-  liftoff: {
-    steady: ['the gold zone is wider and the spark moves slower', 'the gold zone is tiny and the spark races'],
-    lucky: ['one fizzled spark gets a free second try', 'no second tries'],
-  },
-  sky: {
-    agile: ['I turn sharply and slip past clouds', 'I turn late, and clouds catch me'],
-    lucky: ['more stars along the way', 'hardly any stars up here'],
-  },
-  whale: {
-    heart: ['the whale is patient, so the timing window is wide', 'the whale is impatient, so the window is tight'],
-    clever: ['I read the notes early, so they slide in slower', 'the notes rush in fast'],
-  },
-  refuel: {
-    agile: ['I zip left and right quickly', 'I shuffle about slowly'],
-    lucky: ['less junk falls out of the station', 'more junk falls out of the station'],
-  },
-  rocks: {
-    agile: ['I turn sharply around the rocks', 'I turn late, and rocks catch me'],
-    clever: ['my zaps are big and hard to miss', 'my zaps are thin'],
-  },
-  lander: {
-    steady: ['a bigger tank of thruster fuel', 'the tanks are nearly empty'],
-    agile: ['snappy side thrusters', 'sluggish side thrusters'],
-  },
-};
 
 // ---------- Game state ----------
 
@@ -87,6 +54,8 @@ const state = {
   stats: null,        // { steady, agile, clever, lucky, heart }
   sprites: null,      // { main, small, steps: [...] } pixel versions of the drawing
   portrait: '',       // data URL of the main sprite, for dialogue boxes
+  world: null,        // this character's themed trip (see themes.js)
+  worldPromise: null, // the request for it, started the moment the character exists
   maxHp: 0,
   hp: 0,
   index: 0,           // position in LEVELS
@@ -325,6 +294,35 @@ function setCharacter(c) {
   state.character = c;
   state.maxHp = c.hp;
   state.stats = computeStats(c);
+  requestWorld();
+}
+
+// Ask for this character's own trip right away. It builds in the background
+// while they wake up and talk, so it is almost always ready by "Let's go".
+function requestWorld() {
+  const character = state.character;
+  state.world = null;
+  const promise = api('/api/world', { character })
+    .then((raw) => THEMES.normalize(raw))
+    .catch(() => THEMES.normalize(null))
+    .then((world) => {
+      if (state.character === character) {
+        state.world = world;
+        if ($('#screen-card').classList.contains('active')) renderTrip();
+      }
+      return world;
+    });
+  state.worldPromise = promise;
+}
+
+// Everything themed about the trip, sent along with each level's result so the
+// character talks about the things that were actually on screen.
+function themeNames(w) {
+  return {
+    vehicle: w.liftoff.vehicle.name,
+    singer: w.whale.singer.name,
+    station: w.refuel.station,
+  };
 }
 
 // The drawing, crunched into pixel sprites at a few sizes.
@@ -358,7 +356,7 @@ async function wakeUp() {
   const c = state.character;
   await speak('#alive-dialog', `Hi! I'm ${c.name}.`, { wait: true });
   if (c.reason.line) await speak('#alive-dialog', c.reason.line, { wait: true });
-  await speak('#alive-dialog', 'Can you bring me to the moon?');
+  await speak('#alive-dialog', 'Can you get me to the moon? Pretty please?');
 
   const reply = $('#btn-reply');
   reply.hidden = false;
@@ -369,7 +367,7 @@ async function wakeUp() {
   await speak('#alive-dialog', 'But how...?', { player: true });
   await wait(700);
   scene.cue('happy');
-  await speak('#alive-dialog', "You steer, and I'll hold on tight! Here's what I'm made of.", { wait: true });
+  await speak('#alive-dialog', "You steer. I'll try not to scream. Deal?", { wait: true });
   if (currentScene !== scene) return;
   stopScene();
   renderCard();
@@ -386,29 +384,49 @@ function renderCard() {
   $('#card-keepsake').textContent = c.reason.keepsake || 'nothing at all';
   $('#btn-reroll').textContent = c.manual ? 'Edit stats' : 'Try another take';
 
-  const list = $('#card-traits');
-  list.innerHTML = '';
-  c.traits.forEach((t) => {
-    const li = document.createElement('li');
-    li.className = t.kind;
-    li.innerHTML = '<strong></strong><span class="power-tag"></span><span class="kind"></span>' +
-      (t.inspiredBy ? '<span class="seen"></span>' : '');
-    li.querySelector('strong').textContent = t.name;
-    li.querySelector('.power-tag').textContent = `${POWER_LABEL[t.power]} ${t.kind === 'weakness' ? '−1' : '+1'}`;
-    li.querySelector('.kind').textContent = t.effect || (t.kind === 'weakness' ? 'Weakness' : 'Strength');
-    if (t.inspiredBy) li.querySelector('.seen').textContent = `Spotted in your drawing: ${t.inspiredBy}`;
-    list.appendChild(li);
-  });
+  renderTrip();
+}
 
-  const wrap = $('#card-powers');
-  wrap.innerHTML = '';
-  POWERS.forEach((p) => {
-    const v = state.stats[p] || 0;
-    const chip = document.createElement('span');
-    chip.className = `power-chip ${v > 0 ? 'up' : v < 0 ? 'down' : 'flat'}`;
-    chip.textContent = `${POWER_LABEL[p]} ${v > 0 ? '+' + v : v < 0 ? v : '·'}`;
-    wrap.appendChild(chip);
-  });
+// A preview of the character's own trip, drawn with the same pixel art the
+// levels use, so the player can see it is theirs before they fly it.
+function tripArt(draw, big) {
+  const c = document.createElement('canvas');
+  const s = R.makeScreen(c, big ? 116 : 18, big ? 116 : 18);
+  if (big) c.style.imageRendering = 'auto';
+  draw(s);
+  return c;
+}
+
+function renderTrip() {
+  const list = $('#card-trip');
+  list.innerHTML = '';
+  const w = state.world;
+  if (!w) {
+    const li = document.createElement('li');
+    li.className = 'waiting';
+    li.textContent = 'Planning the route…';
+    list.appendChild(li);
+    return;
+  }
+  const keepsake = state.character.reason.keepsake || 'my keepsake';
+  const rows = [
+    [tripArt((s) => THEMES.vehicle(s, w.liftoff.vehicle, 58, 112, 0), true), 'Ride', w.liftoff.vehicle.name],
+    [tripArt((s) => { R.disc(s, 9, 9, 6, P.blue); R.disc(s, 7, 7, 2, P.green); }), 'Paint', 'a path through orbit'],
+    [tripArt((s) => THEMES.singer(s, w.whale.singer, 52, 58, false, 0), true), 'Sing with', w.whale.singer.name],
+    [tripArt((s) => THEMES.icon(s, w.keepsake, 9, 9, 6, 0)), 'Carry to the moon:', keepsake],
+  ];
+  for (const [art, verb, what] of rows) {
+    const li = document.createElement('li');
+    art.classList.add('pixel');
+    li.appendChild(art);
+    const span = document.createElement('span');
+    span.textContent = `${verb} `;
+    const strong = document.createElement('strong');
+    strong.textContent = what;
+    span.appendChild(strong);
+    li.appendChild(span);
+    list.appendChild(li);
+  }
 }
 
 // ======================================================================
@@ -558,8 +576,16 @@ function renderHud(stageName) {
 const flightScr = R.makeScreen($('#flight'));
 const input = R.makeInput($('#flight'));
 
-function startJourney() {
+async function startJourney() {
   stopScene();
+  if (!state.world) {
+    // Rare: the themed trip is still being planned. Give it a moment, then fly
+    // the generic trip rather than keep the player waiting.
+    $('#loading-text').textContent = 'Packing for the trip…';
+    show('screen-loading');
+    const timeout = new Promise((resolve) => setTimeout(() => resolve(null), 30000));
+    state.world = (await Promise.race([state.worldPromise, timeout])) || THEMES.normalize(null);
+  }
   state.hp = state.maxHp;
   state.index = 0;
   state.history = [];
@@ -580,38 +606,18 @@ function nextLevel() {
   showBriefing(level);
 }
 
-// The briefing is where the character sheet meets the level: your character
-// tells you what's coming, and the panel spells out which traits are in play.
+// A short briefing before each of the three very different challenges.
 function showBriefing(level) {
   const game = MINIGAMES[level.game];
+  const brief = game.brief(state.world);
   $('#brief-kicker').textContent = level.kicker;
-  $('#brief-title').textContent = game.title;
-  $('#brief-objective').textContent = game.objective;
+  $('#brief-title').textContent = brief.title;
+  $('#brief-objective').textContent = brief.objective;
   $('#brief-hint').textContent = game.hint;
-
-  const list = $('#brief-traits');
-  list.innerHTML = '';
-  const notes = POWER_NOTES[level.game] || {};
-  const relevant = state.character.traits.filter((t) => game.axis.includes(t.power));
-  if (!relevant.length) {
-    const li = document.createElement('li');
-    li.className = 'flat';
-    li.textContent = 'None of my traits matter here. It is all you!';
-    list.appendChild(li);
-  }
-  relevant.forEach((t) => {
-    const pair = notes[t.power];
-    const li = document.createElement('li');
-    li.className = t.kind === 'weakness' ? 'weakness' : 'strength';
-    li.innerHTML = '<strong></strong><span></span>';
-    li.querySelector('strong').textContent = `${t.name} · ${POWER_LABEL[t.power]} ${t.kind === 'weakness' ? '−1' : '+1'}`;
-    li.querySelector('span').textContent = pair ? (t.kind === 'weakness' ? pair[1] : pair[0]) : (t.effect || 'It comes into play here.');
-    list.appendChild(li);
-  });
 
   moveRider(level.progress);
   show('screen-brief');
-  speak('#brief-dialog', game.line);
+  speak('#brief-dialog', brief.line);
   $('#btn-brief-go').focus({ preventScroll: true });
 }
 
@@ -623,12 +629,14 @@ $('#btn-brief-go').addEventListener('click', () => {
 async function runLevel(level) {
   const game = MINIGAMES[level.game];
   renderHud(level.stage);
-  $('#flight-objective').textContent = game.objective;
+  $('#flight-objective').textContent = game.brief(state.world).objective;
   $('#flight-hint').textContent = game.hint;
   show('screen-flight');
   input.clear();
 
-  const result = await game.run({ scr: flightScr, input, stats: state.stats, character: state.character, sprites: state.sprites });
+  const result = await game.run({
+    scr: flightScr, input, stats: state.stats, character: state.character, sprites: state.sprites, world: state.world,
+  });
 
   const [low, high] = level.hp;
   const change = Math.round(low + ((high - low) * result.score) / 100);
@@ -700,14 +708,16 @@ async function showLog(level, result, actual, bonusTrait) {
   const entry = { stage: game.name, outcome: result.facts.join('; '), hp_change: actual, score: result.score };
   state.history.push(entry);
 
+  const theme = state.world[level.game] || {};
   const beat = await api('/api/beat', {
     character: state.character,
     stage: level.game,
     score: result.score,
     facts: result.facts,
+    names: { ...themeNames(state.world), bad: theme.bad?.name, good: theme.good?.name },
     hp: state.hp,
     maxHp: state.maxHp,
-  }).catch(() => ({ headline: game.title, outcome: result.facts.join('. ') + '.' }));
+  }).catch(() => ({ headline: game.brief(state.world).title, outcome: result.facts.join('. ') + '.' }));
 
   entry.outcome = beat.outcome;
   if (!$('#screen-log').classList.contains('active')) return;
@@ -721,7 +731,7 @@ async function showLog(level, result, actual, bonusTrait) {
 
 const repairCanvas = $('#repair-doodle');
 const repairCtx = repairCanvas.getContext('2d');
-const repairDraw = { color: '#1B2250', size: 6, erasing: false, active: false, last: null, undo: [] };
+const repairDraw = { color: '#1B2250', size: 6, erasing: false, active: false, last: null, undo: [], base: null };
 let currentChallenge = null;
 
 function resetRepairCanvas() {
@@ -729,8 +739,24 @@ function resetRepairCanvas() {
   repairCtx.fillRect(0, 0, repairCanvas.width, repairCanvas.height);
   repairDraw.undo = [];
   repairDraw.erasing = false;
+  repairDraw.base = null;
   $('#repair-tool-eraser').setAttribute('aria-pressed', 'false');
   $('#btn-repair-submit').disabled = true;
+
+  const img = new Image();
+  img.onload = () => {
+    if (img.width === repairCanvas.width && img.height === repairCanvas.height) {
+      repairCtx.drawImage(img, 0, 0);
+    } else {
+      const pad = 22;
+      const scale = Math.min((repairCanvas.width - pad * 2) / img.width, (repairCanvas.height - pad * 2) / img.height);
+      const w = img.width * scale;
+      const h = img.height * scale;
+      repairCtx.drawImage(img, (repairCanvas.width - w) / 2, (repairCanvas.height - h) / 2, w, h);
+    }
+    repairDraw.base = repairCtx.getImageData(0, 0, repairCanvas.width, repairCanvas.height);
+  };
+  img.src = state.doodle;
 }
 
 function repairPoint(e) {
@@ -751,6 +777,7 @@ function repairStrokeTo(p) {
 }
 
 repairCanvas.addEventListener('pointerdown', (e) => {
+  if (!repairDraw.base) return;
   repairCanvas.setPointerCapture(e.pointerId);
   repairDraw.undo.push(repairCtx.getImageData(0, 0, repairCanvas.width, repairCanvas.height));
   if (repairDraw.undo.length > 25) repairDraw.undo.shift();
@@ -790,7 +817,11 @@ $('#repair-tool-undo').addEventListener('click', () => {
   if (prev) repairCtx.putImageData(prev, 0, 0);
   $('#btn-repair-submit').disabled = repairDraw.undo.length === 0;
 });
-$('#repair-tool-clear').addEventListener('click', resetRepairCanvas);
+$('#repair-tool-clear').addEventListener('click', () => {
+  if (repairDraw.base) repairCtx.putImageData(repairDraw.base, 0, 0);
+  repairDraw.undo = [];
+  $('#btn-repair-submit').disabled = true;
+});
 
 function showRepairChallenge(challenge) {
   currentChallenge = challenge;
@@ -799,6 +830,7 @@ function showRepairChallenge(challenge) {
   $('#repair-result').hidden = true;
   $('#btn-repair-submit').hidden = false;
   $('#btn-repair-continue').hidden = true;
+  $('#btn-repair-continue').textContent = challenge.id === 'landing' ? 'Land on the moon!' : 'Keep wobbling';
   showError('#repair-error', '');
   state.progress = LEVELS[state.index].progress;
   show('screen-repair');
@@ -807,11 +839,14 @@ function showRepairChallenge(challenge) {
 
 async function submitRepair() {
   const challenge = currentChallenge;
-  $('#loading-text').textContent = 'Handing over your invention…';
+  const beforeDoodle = state.doodle;
+  const evolvedDoodle = repairCanvas.toDataURL('image/png');
+  $('#loading-text').textContent = 'Testing your very serious landing plan…';
   show('screen-loading');
   try {
     const result = await api('/api/repair', {
-      image: repairCanvas.toDataURL('image/png').split(',')[1],
+      image: evolvedDoodle.split(',')[1],
+      beforeImage: beforeDoodle.split(',')[1],
       challenge,
       character: state.character,
       hp: state.hp,
@@ -821,8 +856,11 @@ async function submitRepair() {
     const before = state.hp;
     state.hp = Math.max(0, Math.min(state.maxHp, state.hp + result.hp_change));
     const actual = state.hp - before;
-    state.history.push({ stage: 'Emergency sketch', outcome: result.outcome, hp_change: actual, score: result.score });
+    state.doodle = evolvedDoodle;
+    await buildSprites();
+    state.history.push({ stage: 'Character evolution', outcome: result.outcome, hp_change: actual, score: result.score });
     $('#repair-object').textContent = result.object;
+    $('#repair-effect').textContent = `Landing idea: ${result.effect}`;
     $('#repair-score').textContent = `${result.score}`;
     $('#repair-score').className = result.score >= 80 ? 'good' : result.score >= 50 ? 'ok' : 'bad';
     const delta = $('#repair-delta');
@@ -862,7 +900,7 @@ function resetFinale() {
 }
 
 async function finaleLanded() {
-  const scene = CUTSCENES.finale({ scr: resetFinale(), sprites: state.sprites });
+  const scene = CUTSCENES.finale({ scr: resetFinale(), sprites: state.sprites, world: state.world });
   currentScene = scene;
   await scene.ready;
   if (currentScene !== scene) return;

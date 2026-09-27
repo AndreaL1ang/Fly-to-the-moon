@@ -4,9 +4,13 @@
 // the one steering their drawing. Each level reads the character's trait powers,
 // so a nimble doodle really does handle better and a wobbly one really does drift.
 //
-// A level is { id, name, title, axis, objective, hint, line, run(ctx) } and run()
-// resolves with { score 0..100, facts: [short strings] }.
-// ctx = { scr, input, stats, character, sprites }
+// Every character also brings their own world (themes.js): what they ride, what
+// gets in their way, what they collect, who sings to them. The mechanics are
+// shared; the story on screen is theirs.
+//
+// A level is { id, name, axis, hint, brief(world), run(ctx) }. brief() returns the
+// themed { title, line, objective }; run() resolves with { score 0..100, facts }.
+// ctx = { scr, input, stats, character, sprites, world }
 
 (function (global) {
   const { P, W, H, F, clamp, lerp } = R;
@@ -55,21 +59,18 @@
   }
 
   const bobOf = (t, speed) => Math.round(Math.sin(t * (speed || 6)));
+  const worldOf = (ctx) => ctx.world || THEMES.DEFAULT_WORLD;
+  // Upper-cases a HUD title and, if it's too long, trims it at a word break.
+  const upper = (str, max) => {
+    const s = String(str).toUpperCase();
+    if (s.length <= max) return s;
+    const cut = s.slice(0, max + 1).lastIndexOf(' ');
+    return cut > max / 2 ? s.slice(0, cut) : s.slice(0, max);
+  };
 
   function seeded(seed) {
     let n = seed || 7;
     return () => ((n = (n * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
-  }
-
-  // A chunky star pickup.
-  function starShape(scr, x, y, r, c) {
-    const k = Math.max(1, Math.round(r));
-    const t = Math.max(1, Math.round(k / 2));
-    R.rect(scr, x - k - 1, y - t / 2 - 1, k * 2 + 3, t + 2, P.black);
-    R.rect(scr, x - t / 2 - 1, y - k - 1, t + 2, k * 2 + 3, P.black);
-    R.rect(scr, x - k, y - t / 2, k * 2 + 1, t, c);
-    R.rect(scr, x - t / 2, y - k, t, k * 2 + 1, c);
-    R.rect(scr, x - 0.5, y - 0.5, 1, 1, P.white);
   }
 
   function moonDisc(scr, x, y, r) {
@@ -81,41 +82,201 @@
   }
 
   // ---------------------------------------------------------------------
+  // Wobble launch. Keep the homemade ship upright while it rattles apart.
+  // ---------------------------------------------------------------------
+
+  const wobble = {
+    id: 'wobble',
+    name: 'Wobble launch',
+    axis: [],
+    hint: 'Move left and right to stop the rocket from tipping over.',
+    brief: (w) => ({
+      title: 'Wobble launch',
+      line: 'This rocket has two settings: WOBBLE and MORE WOBBLE. Please balance me!',
+      objective: `Keep ${w.liftoff.vehicle.name} upright until it escapes Earth.`,
+    }),
+    run(ctx) {
+      const { scr, input, sprites } = ctx;
+      const w = worldOf(ctx);
+      const stars = R.makeStars(45, 10, 112);
+      const say = makeSay();
+      const parts = [];
+      const duration = 11;
+      const s = { angle: 0, av: 0, safe: 0, bonks: 0, lastSecond: -1 };
+      say.set('WHY IS IT WIGGLING?', 1.8);
+
+      return R.loop((dt, t) => {
+        const control = input.axis().x;
+        const wind = Math.sin(t * 1.7) + Math.sin(t * 3.9) * 0.45;
+        s.av += (s.angle * 1.7 + wind * 0.42 - control * 2.2) * dt;
+        s.av *= Math.pow(0.96, dt * 60);
+        s.angle += s.av * dt;
+        if (Math.abs(s.angle) < 0.25) s.safe += dt;
+        if (Math.abs(s.angle) > 0.78) {
+          s.bonks += 1;
+          s.angle = Math.sign(s.angle) * 0.42;
+          s.av *= -0.45;
+          say.set('WOBBLE BONK!', 0.9);
+          burst(parts, 96, 106, 14, [P.yellow, P.orange, P.white], 45);
+        }
+        const second = Math.floor(t);
+        if (second !== s.lastSecond && second > 1 && second < duration && Math.random() < 0.45) {
+          s.lastSecond = second;
+          say.set(['HOLD MY SOCKS!', 'LEFT! NO, RIGHT!', 'I REGRET PHYSICS!'][second % 3], 0.9);
+        }
+        input.clear();
+        say.tick(dt);
+
+        R.bands(scr, 0, H, [P.black, P.navy, P.plum, P.orange]);
+        R.drawStars(scr, stars, t, t * 22);
+        moonDisc(scr, 164, 27, 10);
+        R.rect(scr, 0, 116, W, 28, P.forest);
+        R.rect(scr, 0, 116, W, 2, P.green);
+
+        scr.g.save();
+        scr.g.translate(96, 110);
+        scr.g.rotate(s.angle);
+        scr.g.translate(-96, -110);
+        const seat = THEMES.vehicle(scr, w.liftoff.vehicle, 96, 112, 3);
+        R.sprite(scr, sprites.main, 96, seat + bobOf(t, 11));
+        R.poly(scr, [{ x: 88, y: 116 }, { x: 104, y: 116 }, { x: 96, y: 137 }], P.orange);
+        R.poly(scr, [{ x: 92, y: 116 }, { x: 100, y: 116 }, { x: 96, y: 130 }], P.yellow);
+        scr.g.restore();
+
+        particles(scr, parts, dt);
+        say.draw(scr, 96, 48);
+        hud(scr, 'WOBBLE LAUNCH', `${Math.max(0, Math.ceil(duration - t))}s`);
+        progressBar(scr, t / duration);
+        R.rect(scr, 44, 132, 104, 6, P.slate);
+        R.rect(scr, 94, 130, 4, 10, P.white);
+        R.rect(scr, 94 + clamp(s.angle / 0.78, -1, 1) * 48, 130, 4, 10, Math.abs(s.angle) < 0.3 ? P.green : P.red);
+
+        if (t >= duration) {
+          const score = Math.round(clamp((s.safe / duration) * 115 - s.bonks * 4, 0, 100));
+          return { score, facts: [`kept the rocket steady for ${Math.round(s.safe)} seconds`, `${s.bonks} giant wobble bonk${s.bonks === 1 ? '' : 's'}`, 'escaped Earth with all important socks aboard'] };
+        }
+        return null;
+      });
+    },
+  };
+
+  // ---------------------------------------------------------------------
+  // Orbit painter. Draw one route, then watch the doodle fly along it.
+  // ---------------------------------------------------------------------
+
+  const orbit = {
+    id: 'orbit',
+    name: 'Orbit painter',
+    axis: [],
+    hint: 'Hold and draw a path through the stars to the moon. Release to fly it.',
+    brief: () => ({
+      title: 'Orbit painter',
+      line: 'Space has no roads. Rude! Draw me one through the shiny rings.',
+      objective: 'Draw a safe path through the three star rings and end at the moon.',
+    }),
+    run(ctx) {
+      const { scr, input, sprites } = ctx;
+      const stars = R.makeStars(70, 10, H);
+      const planets = [
+        { x: 69, y: 91, r: 13, c: P.red },
+        { x: 121, y: 54, r: 11, c: P.blue },
+      ];
+      const rings = [{ x: 48, y: 54 }, { x: 100, y: 112 }, { x: 148, y: 72 }];
+      const say = makeSay();
+      const s = { phase: 'draw', path: [{ x: 20, y: 120 }], wasDown: false, flight: 0, hits: 0, got: new Set(), hit: new Set(), endT: 0 };
+      say.set('DRAW ME A ROAD!', 1.6);
+
+      const resample = (pts) => {
+        const out = [pts[0]];
+        for (let i = 1; i < pts.length; i++) {
+          const a = pts[i - 1], b = pts[i];
+          const d = Math.hypot(b.x - a.x, b.y - a.y);
+          const n = Math.max(1, Math.ceil(d / 3));
+          for (let j = 1; j <= n; j++) out.push({ x: lerp(a.x, b.x, j / n), y: lerp(a.y, b.y, j / n) });
+        }
+        return out;
+      };
+
+      return R.loop((dt, t) => {
+        if (s.phase === 'draw') {
+          if (input.down) {
+            const p = { x: clamp(input.x, 8, W - 8), y: clamp(input.y, 14, H - 8) };
+            const last = s.path[s.path.length - 1];
+            if (Math.hypot(p.x - last.x, p.y - last.y) > 2) s.path.push(p);
+          }
+          if (s.wasDown && !input.down && s.path.length > 2) {
+            s.path = resample(s.path);
+            s.phase = 'fly';
+            say.set('I TRUST THIS LINE!', 1.4);
+          }
+          s.wasDown = input.down;
+        } else {
+          s.flight += dt * 34;
+          const idx = Math.min(s.path.length - 1, Math.floor(s.flight));
+          const p = s.path[idx];
+          planets.forEach((pl, i) => {
+            if (!s.hit.has(i) && Math.hypot(p.x - pl.x, p.y - pl.y) < pl.r + 5) {
+              s.hit.add(i); s.hits += 1; say.set('PLANET BONK!', 0.9);
+            }
+          });
+          rings.forEach((ring, i) => {
+            if (!s.got.has(i) && Math.hypot(p.x - ring.x, p.y - ring.y) < 11) {
+              s.got.add(i); say.set('DING!', 0.6);
+            }
+          });
+          if (idx >= s.path.length - 1) s.endT += dt;
+        }
+        input.clear();
+        say.tick(dt);
+
+        R.bands(scr, 0, H, [P.black, P.black, P.navy, P.plum]);
+        R.drawStars(scr, stars, t);
+        planets.forEach((pl) => {
+          R.disc(scr, pl.x, pl.y, pl.r + 1, P.black);
+          R.disc(scr, pl.x, pl.y, pl.r, pl.c);
+          R.oval(scr, pl.x, pl.y, pl.r + 7, 3, P.silver);
+        });
+        rings.forEach((ring, i) => {
+          R.ring(scr, ring.x, ring.y, 8 + Math.sin(t * 4 + i), s.got.has(i) ? P.green : P.yellow);
+          R.text(scr, '+', ring.x, ring.y - 3, P.white, { align: 'center' });
+        });
+        moonDisc(scr, 174, 24, 12);
+        for (let i = 1; i < s.path.length; i++) R.line(scr, s.path[i - 1].x, s.path[i - 1].y, s.path[i].x, s.path[i].y, s.phase === 'draw' ? P.pink : P.lavender);
+
+        const pos = s.phase === 'fly' ? s.path[Math.min(s.path.length - 1, Math.floor(s.flight))] : s.path[0];
+        R.sprite(scr, sprites.main, pos.x, pos.y, { scale: 1.2 });
+        say.draw(scr, pos.x, pos.y - 18);
+        hud(scr, 'ORBIT PAINTER', s.phase === 'draw' ? 'DRAW + RELEASE' : `${s.got.size}/3 RINGS`);
+
+        if (s.endT > 1.2) {
+          const end = s.path[s.path.length - 1];
+          const moonClose = Math.hypot(end.x - 174, end.y - 24) < 28;
+          const score = Math.round(clamp(s.got.size * 25 + (moonClose ? 30 : 5) - s.hits * 18, 0, 100));
+          return { score, facts: [`flew through ${s.got.size} of 3 star rings`, `${s.hits} planet bonk${s.hits === 1 ? '' : 's'}`, moonClose ? 'the path reached the moon' : 'the path ended somewhere moon-ish'] };
+        }
+        return null;
+      });
+    },
+  };
+
+  // ---------------------------------------------------------------------
   // 1. Lift-off. Side view of the pad. Stop the spark in the gold, 3 times.
   //    Steady widens the gold and slows the spark. Lucky forgives one miss.
   // ---------------------------------------------------------------------
 
-  function drawRocket(scr, x, bottom, lit, t) {
-    const top = bottom - 60;
-    R.rect(scr, x - 13, top - 1, 26, 62, P.black);
-    R.poly(scr, [{ x: x - 14, y: top + 1 }, { x: x, y: top - 21 }, { x: x + 14, y: top + 1 }], P.black);
-    R.poly(scr, [{ x: x - 12, y: top }, { x: x, y: top - 19 }, { x: x + 12, y: top }], P.red);
-    R.rect(scr, x - 12, top, 24, 60, P.white);
-    R.rect(scr, x - 12, top + 40, 24, 4, P.red);
-    for (const side of [-1, 1]) {
-      const pts = [{ x: x + side * 12, y: bottom - 18 }, { x: x + side * 24, y: bottom + 1 }, { x: x + side * 12, y: bottom + 1 }];
-      R.poly(scr, pts.map((p) => ({ x: p.x + side, y: p.y + 1 })), P.black);
-      R.poly(scr, pts, P.red);
-    }
-    R.rect(scr, x - 6, bottom, 12, 4, P.slate);
-    for (let i = 0; i < 3; i++) R.rect(scr, x - 8 + i * 6, top + 48, 4, 4, i < lit ? P.green : P.slate);
-    if (lit > 0) {
-      const len = 6 + lit * 5 + Math.random() * 5;
-      R.poly(scr, [{ x: x - 7, y: bottom + 4 }, { x: x + 7, y: bottom + 4 }, { x: x, y: bottom + 4 + len }], P.orange);
-      R.poly(scr, [{ x: x - 3, y: bottom + 4 }, { x: x + 3, y: bottom + 4 }, { x: x, y: bottom + 4 + len * 0.6 }], P.yellow);
-    }
-  }
-
   const liftoff = {
     id: 'liftoff',
     name: 'Lift-off',
-    title: 'Light the rocket',
     axis: ['steady', 'lucky'],
-    objective: 'Light all three engine stages. Stop the spark inside the gold zone.',
     hint: 'Tap the screen (or press Space) when the red spark is in the gold.',
-    line: "Okay, I'm holding on! Light the engines for me. Tap when the spark hits the gold!",
+    brief: (w) => ({
+      title: w.liftoff.title,
+      line: w.liftoff.line,
+      objective: `Light all three stages of ${w.liftoff.vehicle.name}. Stop the spark inside the gold zone.`,
+    }),
     run(ctx) {
       const { scr, input, stats, sprites } = ctx;
+      const w = worldOf(ctx);
       const steady = stats.steady || 0;
       const band = clamp(0.11 + 0.035 * steady, 0.05, 0.25);
       let retries = (stats.lucky || 0) > 0 ? 1 : 0;
@@ -144,9 +305,9 @@
           } else {
             s.results.push(acc);
             s.stage += 1;
-            if (acc > 0.75) say.set('WHOOSH!', 1);
+            if (acc > 0.75) say.set(w.voice.yay, 1);
             else if (acc > 0.35) say.set('OKAY...', 1);
-            else { say.set('EEK!', 1); s.shake = 1; }
+            else { say.set(w.voice.ouch, 1); s.shake = 1; }
             burst(parts, 100, 116, 10, [P.silver, P.white, P.slate], 30);
             if (s.stage >= 3) { s.phase = 'lift'; say.set('HERE WE GO!', 2); } else next();
           }
@@ -181,8 +342,8 @@
           R.rect(scr, 80, gy - 6, 40, 1, P.silver);
         }
 
-        drawRocket(scr, 100, 112, Math.min(3, s.stage), t);
-        R.sprite(scr, sprites.main, 100, 90 + bobOf(t, s.phase === 'lift' ? 14 : 5));
+        const seat = THEMES.vehicle(scr, w.liftoff.vehicle, 100, 112, Math.min(3, s.stage));
+        R.sprite(scr, sprites.main, 100, seat + bobOf(t, s.phase === 'lift' ? 14 : 5));
         particles(scr, parts, dt);
         say.draw(scr, 100, 56);
 
@@ -195,7 +356,7 @@
           R.rect(scr, bx + (s.center - band) * bw, by, band * 2 * bw, 6, P.yellow);
           R.rect(scr, bx + needle * bw - 1, by - 2, 3, 10, P.red);
         }
-        hud(scr, 'LIFT-OFF', `${Math.min(3, s.stage)}/3 LIT`);
+        hud(scr, upper(w.liftoff.title, 26), `${Math.min(3, s.stage)}/3 LIT`);
         R.shake(scr, 0);
 
         if (s.phase === 'lift' && s.lift > 2.6) {
@@ -203,9 +364,9 @@
           const clean = s.results.filter((r) => r > 0.75).length;
           const bad = s.results.filter((r) => r < 0.35).length;
           const facts = [`${clean} of 3 engine stages lit perfectly`];
-          if (bad) facts.push(`${bad} spark${bad > 1 ? 's' : ''} fizzled and shook the rocket`);
+          if (bad) facts.push(`${bad} spark${bad > 1 ? 's' : ''} fizzled and shook ${w.liftoff.vehicle.name}`);
           if (s.usedLuck) facts.push('a lucky second try saved one spark');
-          facts.push('the rocket still left the ground');
+          facts.push(`${w.liftoff.vehicle.name} still left the ground`);
           return { score: Math.round(avg * 100), facts };
         }
         return null;
@@ -287,8 +448,11 @@
 
       // ---- draw ----
       R.shake(scr, s.hitT > 0 ? 2 : 0);
-      cfg.sky(scr, t, HOR, s.z / cfg.distance);
-      R.floor(scr, { horizon: HOR, height: FLOOR, tile: cfg.tile, camZ: s.z, a: cfg.floorA, b: cfg.floorB, haze: cfg.haze, grid: cfg.grid });
+      const ground = THEMES.FLOORS[cfg.theme.floor] || THEMES.FLOORS.clouds;
+      R.bands(scr, 0, HOR, THEMES.SKIES[cfg.theme.sky] || THEMES.SKIES.day);
+      if (cfg.decor) cfg.decor(scr, t, HOR, s.z / cfg.distance);
+      R.rect(scr, 0, HOR - 1, W, 1, ground.haze);
+      R.floor(scr, { horizon: HOR, height: FLOOR, tile: cfg.tile, camZ: s.z, a: ground.a, b: ground.b, haze: ground.haze, grid: ground.grid });
 
       const items = s.objs.map((o) => ({ d: o.z - s.z, o }));
       for (const b of s.bolts) items.push({ d: b.z - s.z, b });
@@ -302,8 +466,7 @@
           return;
         }
         const p = R.project(it.o.x, it.o.y, it.d, HOR);
-        if (it.o.kind === 'bad') cfg.drawBad(scr, p, it.o.r * p.s, it.o, t);
-        else cfg.drawGood(scr, p, it.o.r * p.s, t);
+        THEMES.icon(scr, it.o.kind === 'bad' ? cfg.theme.bad : cfg.theme.good, p.x, p.y, it.o.r * p.s, t, it.o.seed);
       };
       items.filter((it) => it.d > F).forEach(drawItem);
       const shadowY = HOR + FLOOR;
@@ -332,16 +495,20 @@
   const sky = {
     id: 'sky',
     name: 'Sky dash',
-    title: 'Up through the clouds',
     axis: ['agile', 'lucky'],
-    objective: 'Steer me around the storm clouds and grab the stars.',
     hint: 'Point where you want me to fly (or use the arrow keys).',
-    line: 'Whoa, clouds! The dark ones zap. Steer me around them, and grab every star!',
+    brief: (w) => ({
+      title: w.sky.title,
+      line: w.sky.line,
+      objective: `Steer me around the ${w.sky.bad.name} and grab the ${w.sky.good.name}.`,
+    }),
     run(ctx) {
       const lucky = ctx.stats.lucky || 0;
+      const w = worldOf(ctx), th = w.sky;
       return runner(ctx, {
         seed: 11,
-        name: 'SKY DASH',
+        theme: th,
+        name: upper(th.title, 20),
         speed: 250,
         distance: 3700,
         badR: 16,
@@ -349,32 +516,14 @@
         goodGap: clamp(250 - lucky * 55, 120, 420),
         boltR: 0,
         tile: 28,
-        floorA: P.white,
-        floorB: P.silver,
-        haze: P.silver,
         startLine: 'HOLD ON TO ME!',
-        hitLine: 'OUCH!',
-        goodLine: 'YAY!',
-        sky(scr, t, hor) {
-          R.bands(scr, 0, hor, [P.navy, P.blue, P.blue, P.peach]);
-          R.rect(scr, 0, hor - 1, W, 1, P.white);
-        },
-        drawBad(scr, p, r, o, t) {
-          const lumps = [[-0.6, 0.15, 0.62], [0.05, -0.2, 0.85], [0.62, 0.12, 0.58]];
-          for (const l of lumps) R.disc(scr, p.x + l[0] * r, p.y + l[1] * r, l[2] * r + 1, P.black);
-          for (const l of lumps) R.disc(scr, p.x + l[0] * r, p.y + l[1] * r, l[2] * r, P.slate);
-          R.disc(scr, p.x - r * 0.1, p.y - r * 0.35, r * 0.35, P.lavender);
-          if (((t * 6 + o.seed) | 0) % 7 === 0) {
-            R.line(scr, p.x, p.y + r * 0.5, p.x + r * 0.3, p.y + r * 1.1, P.yellow);
-            R.line(scr, p.x + r * 0.3, p.y + r * 1.1, p.x, p.y + r * 1.4, P.yellow);
-          }
-        },
-        drawGood(scr, p, r) { starShape(scr, p.x, p.y, r, P.yellow); },
-        counter: (s) => `BONK ${s.hits}  STAR ${s.got}`,
+        hitLine: w.voice.ouch,
+        goodLine: w.voice.yay,
+        counter: (s) => `BONK ${s.hits}  GOT ${s.got}`,
         score: (s) => 100 - s.hits * 9 + s.got * 4,
         facts: (s) => [
-          s.hits === 0 ? 'flew through the whole storm without touching a cloud' : `got bonked by ${s.hits} storm cloud${s.hits > 1 ? 's' : ''}`,
-          `grabbed ${s.got} star${s.got === 1 ? '' : 's'}`,
+          s.hits === 0 ? `dodged every single one of the ${th.bad.name}` : `got bonked by ${s.hits} of the ${th.bad.name}`,
+          `grabbed ${s.got} of the ${th.good.name}`,
         ],
       });
     },
@@ -390,14 +539,20 @@
   const whale = {
     id: 'whale',
     name: 'Whale song',
-    title: 'Sing with the whale',
-    axis: ['heart', 'clever'],
-    objective: 'Help me sing back. Hit each note as it lands on its ring.',
+    axis: [],
     hint: 'Tap the left, middle or right side (or press 1, 2, 3) as each note hits its ring.',
-    line: 'Is that... a WHALE? It is singing to us! Help me sing back. Hit every note!',
+    brief: (w) => ({
+      title: w.whale.title,
+      line: w.whale.line,
+      objective: `${w.whale.singer.name[0].toUpperCase() + w.whale.singer.name.slice(1)} is singing to us. Help me sing back: hit each note as it lands on its ring.`,
+    }),
     run(ctx) {
       const { scr, input, stats, sprites } = ctx;
-      const heart = stats.heart || 0, clever = stats.clever || 0;
+      const w = worldOf(ctx), th = w.whale;
+      const sound = th.sound || 'LA';
+      const singWords = [`${sound}!`, sound, `${sound} ${sound}!`, 'OOH!'];
+      // This is the one pure arcade beat: everyone gets the same fair timing.
+      const heart = 0, clever = 0;
       const total = 8;
       const travel = 2.3 * (1 + 0.15 * clever);
       const win = clamp(0.1 + 0.035 * heart, 0.05, 0.22);
@@ -405,11 +560,11 @@
       const say = makeSay();
       const parts = [];
       const lane = (i, u) => ({
-        x: lerp(W / 2 - 34 + (i - 1) * 8, W / 2 + (i - 1) * 46, u),
-        y: lerp(42, 100, u),
+        x: lerp(W / 2 + (i - 1) * 7, W / 2 + (i - 1) * 46, u),
+        y: lerp(54, 100, u),
       });
       const s = { notes: [], spawned: 0, hits: 0, misses: 0, press: [-1, 0], mouth: 0, joy: 0, endT: 0, singT: 0 };
-      say.set('LA LA LA?', 1.5);
+      say.set(`${sound} ${sound}?`, 1.5);
 
       const judge = (i, t) => {
         s.press = [i, 0.15];
@@ -420,10 +575,10 @@
           const p = lane(i, 1);
           burst(parts, p.x, p.y, 8, [LANE_COLORS[i], P.white], 40);
           parts.push({ x: W / 2, y: 104, vx: 0, vy: -70, life: 0.9, c: LANE_COLORS[i], size: 2 });
-          say.set(['LA!', 'LAA!', 'OOH!', 'LA LA!'][s.hits % 4], 0.5);
+          say.set(singWords[s.hits % 4], 0.5);
         } else if (live.length) {
           live[0].done = true; s.misses += 1;
-          say.set('OOPS!', 0.7);
+          say.set(w.voice.ouch, 0.7);
         }
       };
 
@@ -451,18 +606,11 @@
         R.bands(scr, 0, H, [P.black, P.black, P.navy, P.navy]);
         R.drawStars(scr, stars, t);
 
-        // the whale
-        const wx = W / 2 + Math.sin(t * 0.7) * 6, wy = 28 + Math.round(Math.sin(t * 1.3) * 2);
-        R.poly(scr, [{ x: wx + 38, y: wy }, { x: wx + 56, y: wy - 13 }, { x: wx + 52, y: wy + 1 }, { x: wx + 57, y: wy + 13 }], P.black);
-        R.poly(scr, [{ x: wx + 38, y: wy }, { x: wx + 54, y: wy - 11 }, { x: wx + 50, y: wy + 1 }, { x: wx + 55, y: wy + 11 }], P.blue);
-        R.oval(scr, wx, wy, 45, 14, P.black);
-        R.oval(scr, wx, wy, 44, 13, P.blue);
-        R.oval(scr, wx - 4, wy + 6, 32, 5, P.white);
-        R.disc(scr, wx - 30, wy - 4, 2, P.black);
-        R.px(scr, wx - 31, wy - 5, P.white);
-        R.oval(scr, wx - 40, wy + 4, 4, s.mouth > 0 ? 3 : 1, P.black);
+        // the singer
+        const wx = W / 2 + Math.sin(t * 0.7) * 6, wy = 34 + Math.round(Math.sin(t * 1.3) * 2);
+        THEMES.singer(scr, th.singer, wx, wy, s.mouth > 0, t);
         if (s.joy > 0 && ((t * 4) | 0) % 2 === 0) {
-          for (let i = 0; i < Math.min(5, s.joy); i++) R.rect(scr, wx - 6 + i * 3, wy - 17 - (i % 2) * 3, 2, 2, i % 2 ? P.white : P.blue);
+          for (let i = 0; i < Math.min(6, s.joy); i++) R.rect(scr, wx - 30 + i * 11, 14 + (i % 2) * 3, 2, 2, i % 2 ? P.white : P.pink);
         }
 
         // lanes and their rings
@@ -489,7 +637,7 @@
         R.sprite(scr, sprites.main, W / 2, 142 + bobOf(t, 4), { sy: s.singT > 0 ? 1.12 : 1, sx: s.singT > 0 ? 0.92 : 1 });
         particles(scr, parts, dt);
         say.draw(scr, W / 2, 108);
-        hud(scr, 'WHALE SONG', `SUNG ${s.hits}/${total}`);
+        hud(scr, upper(th.title, 26), `SUNG ${s.hits}/${total}`);
 
         if (s.spawned >= total && s.notes.every((n) => n.done)) {
           s.endT += dt;
@@ -498,7 +646,7 @@
               score: Math.round((s.hits / total) * 100),
               facts: [
                 `sang back ${s.hits} of ${total} notes`,
-                s.hits >= total - 1 ? 'the whale sang the last verse with us' : s.hits > total / 2 ? 'the whale liked the duet well enough to move aside' : 'the whale got bored and swam off mid-song',
+                s.hits >= total - 1 ? `${th.singer.name} sang the last verse with us` : s.hits > total / 2 ? `${th.singer.name} liked the duet well enough to let us pass` : `${th.singer.name} got bored and wandered off mid-song`,
               ],
             };
           }
@@ -516,13 +664,16 @@
   const refuel = {
     id: 'refuel',
     name: 'Refuel',
-    title: 'Catch the fuel',
     axis: ['agile', 'lucky'],
-    objective: 'The station is throwing us fuel. Catch the green cans, dodge the junk.',
-    hint: 'Point left and right (or use the arrow keys) to move me under the cans.',
-    line: 'A space station! They are tossing us fuel! Move me under the green cans. Not the junk!',
+    hint: 'Point left and right (or use the arrow keys) to move me under the good stuff.',
+    brief: (w) => ({
+      title: w.refuel.title,
+      line: w.refuel.line,
+      objective: `${w.refuel.station[0].toUpperCase() + w.refuel.station.slice(1)} is throwing us ${w.refuel.good.name}. Catch those, dodge the ${w.refuel.bad.name}.`,
+    }),
     run(ctx) {
       const { scr, input, stats, sprites } = ctx;
+      const w = worldOf(ctx), th = w.refuel;
       const agile = stats.agile || 0, lucky = stats.lucky || 0;
       const duration = 16;
       const maxSpeed = 110 * (1 + 0.3 * agile);
@@ -546,7 +697,7 @@
         const hatchX = W / 2 + Math.sin(t * 1.3) * 52;
         if (t < duration - 1.5 && t > s.nextDrop) {
           const r = Math.random();
-          const kind = r < junkChance ? 'junk' : r < junkChance + (1 - junkChance) * 0.25 ? 'star' : 'fuel';
+          const kind = r < junkChance ? 'junk' : 'fuel';
           s.items.push({ kind, x: hatchX, y: 32, vy: 34 + Math.random() * 22 + t * 1.5 });
           if (kind !== 'junk') s.dropped += 1;
           s.nextDrop = t + 0.5 + Math.random() * 0.25;
@@ -555,10 +706,10 @@
           it.y += it.vy * dt;
           if (!it.done && it.y > 104 && it.y < 126 && Math.abs(it.x - s.x) < 13) {
             it.done = true;
-            if (it.kind === 'junk') { s.junk += 1; s.hitT = 0.5; say.set('BONK!', 0.8); burst(parts, it.x, it.y, 8, [P.slate, P.silver], 40); }
+            if (it.kind === 'junk') { s.junk += 1; s.hitT = 0.5; say.set(w.voice.ouch, 0.8); burst(parts, it.x, it.y, 8, [P.slate, P.silver], 40); }
             else {
-              if (it.kind === 'fuel') s.fuel += 1; else s.stars += 1;
-              say.set(it.kind === 'fuel' ? 'GULP!' : 'SHINY!', 0.6);
+              s.fuel += 1;
+              say.set(w.voice.yay, 0.6);
               burst(parts, it.x, it.y, 8, [P.green, P.yellow, P.white], 40);
             }
           }
@@ -586,21 +737,7 @@
         R.rect(scr, hatchX - 6, 29, 12, 4, P.black);
         R.rect(scr, hatchX - 5, 29, 10, 3, P.slate);
 
-        for (const it of s.items) {
-          if (it.kind === 'fuel') {
-            R.rect(scr, it.x - 4, it.y - 5, 9, 11, P.black);
-            R.rect(scr, it.x - 3, it.y - 4, 7, 9, P.green);
-            R.rect(scr, it.x - 1, it.y - 6, 3, 2, P.silver);
-            R.text(scr, 'F', it.x - 1, it.y - 2, P.black);
-          } else if (it.kind === 'star') {
-            starShape(scr, it.x, it.y, 4, P.yellow);
-          } else {
-            R.rect(scr, it.x - 6, it.y - 2, 13, 5, P.black);
-            R.rect(scr, it.x - 5, it.y - 1, 11, 3, P.slate);
-            R.disc(scr, it.x - 5, it.y, 2, P.silver);
-            R.disc(scr, it.x + 5, it.y, 2, P.silver);
-          }
-        }
+        for (const it of s.items) THEMES.icon(scr, it.kind === 'junk' ? th.bad : th.good, it.x, it.y, 5, t);
 
         const flashing = s.hitT > 0 && ((t * 20) | 0) % 2 === 0;
         R.sprite(scr, sprites.main, s.x, 138 + bobOf(t, 7), { flash: flashing });
@@ -610,18 +747,18 @@
         say.draw(scr, s.x, 104);
 
         const left = Math.max(0, Math.ceil(duration - t));
-        hud(scr, 'REFUEL', `FUEL ${s.fuel + s.stars} JUNK ${s.junk} ${left}S`);
+        hud(scr, upper(th.title, 20), `GOT ${s.fuel} OOF ${s.junk} ${left}S`);
         progressBar(scr, t / duration);
         R.shake(scr, 0);
 
         if (t >= duration) {
-          const caught = s.fuel + s.stars;
+          const caught = s.fuel;
           const score = Math.round(clamp((caught / Math.max(1, s.dropped)) * 110 - s.junk * 14, 0, 100));
           return {
             score,
             facts: [
-              `caught ${caught} of ${s.dropped} fuel cans and stars`,
-              s.junk ? `got hit on the head by ${s.junk} piece${s.junk > 1 ? 's' : ''} of junk` : 'dodged every piece of junk',
+              `caught ${caught} of ${s.dropped} ${th.good.name} from ${th.station}`,
+              s.junk ? `got hit on the head by ${s.junk} of the ${th.bad.name}` : `dodged all of the ${th.bad.name}`,
             ],
           };
         }
@@ -638,16 +775,20 @@
   const rocks = {
     id: 'rocks',
     name: 'Rock blaster',
-    title: 'Zap through the rocks',
     axis: ['agile', 'clever'],
-    objective: 'Zap the asteroids before they bonk me, and grab the ice.',
     hint: 'Point to steer. Tap (or press Space) to zap straight ahead.',
-    line: 'Rocks. So many rocks. Tap to zap them before they bonk me!',
+    brief: (w) => ({
+      title: w.rocks.title,
+      line: w.rocks.line,
+      objective: `Zap the ${w.rocks.bad.name} before they bonk me, and grab the ${w.rocks.good.name}.`,
+    }),
     run(ctx) {
       const clever = ctx.stats.clever || 0;
+      const w = worldOf(ctx), th = w.rocks;
       return runner(ctx, {
         seed: 23,
-        name: 'ROCK BLASTER',
+        theme: th,
+        name: upper(th.title, 20),
         speed: 300,
         distance: 4500,
         badR: 14,
@@ -656,38 +797,16 @@
         fire: true,
         boltR: clamp(5 + 3 * clever, 2, 12),
         tile: 30,
-        grid: true,
-        floorA: P.pink,
-        floorB: P.black,
-        haze: P.plum,
         startLine: 'ZAP TIME!',
-        hitLine: 'BONK!',
-        goodLine: 'ICE!',
-        sky(scr, t, hor, pct) {
-          R.bands(scr, 0, hor, [P.black, P.black, P.navy, P.plum]);
-          moonDisc(scr, W / 2, hor - 2, 6 + 16 * clamp(pct, 0, 1));
-          R.rect(scr, 0, hor - 1, W, 1, P.pink);
-        },
-        drawBad(scr, p, r) {
-          R.disc(scr, p.x, p.y, r + 1, P.black);
-          R.disc(scr, p.x, p.y, r, P.brown);
-          R.disc(scr, p.x - r * 0.3, p.y - r * 0.25, r * 0.28, P.slate);
-          R.disc(scr, p.x + r * 0.35, p.y + r * 0.3, r * 0.2, P.slate);
-          R.disc(scr, p.x - r * 0.35, p.y - r * 0.5, Math.max(0.5, r * 0.12), P.peach);
-        },
-        drawGood(scr, p, r) {
-          const k = Math.max(2, Math.round(r));
-          const pts = [{ x: p.x, y: p.y - k - 1 }, { x: p.x + k, y: p.y }, { x: p.x, y: p.y + k + 1 }, { x: p.x - k, y: p.y }];
-          R.poly(scr, pts.map((q) => ({ x: q.x + Math.sign(q.x - p.x), y: q.y + Math.sign(q.y - p.y) })), P.black);
-          R.poly(scr, pts, P.blue);
-          R.rect(scr, p.x - 1, p.y - k / 2, 1, 2, P.white);
-        },
+        hitLine: w.voice.ouch,
+        goodLine: w.voice.yay,
+        decor(scr, t, hor, pct) { moonDisc(scr, W / 2, hor - 2, 6 + 16 * clamp(pct, 0, 1)); },
         counter: (s) => `ZAP ${s.zapped} BONK ${s.hits}`,
         score: (s) => 100 - s.hits * 12 + s.zapped * 2 + s.got * 5,
         facts: (s) => [
-          `zapped ${s.zapped} asteroid${s.zapped === 1 ? '' : 's'}`,
-          s.hits === 0 ? 'never got hit by a single rock' : `got bonked by ${s.hits} rock${s.hits > 1 ? 's' : ''}`,
-          `grabbed ${s.got} chunk${s.got === 1 ? '' : 's'} of ice`,
+          `zapped ${s.zapped} of the ${th.bad.name}`,
+          s.hits === 0 ? `never got hit by any of the ${th.bad.name}` : `got bonked by ${s.hits} of the ${th.bad.name}`,
+          `grabbed ${s.got} of the ${th.good.name}`,
         ],
       });
     },
@@ -732,11 +851,13 @@
   const lander = {
     id: 'lander',
     name: 'Moon landing',
-    title: 'Land on the moon',
     axis: ['steady', 'agile'],
-    objective: 'Hold to fire the thruster. Land me softly on the flashing pad.',
     hint: 'Hold the screen (or Space) to thrust. Hold to the left or right of me to drift that way.',
-    line: 'There it is, the MOON! Hold to slow us down, and put me on the flashing pad. Gently!',
+    brief: (w) => ({
+      title: w.lander.title,
+      line: w.lander.line,
+      objective: 'Hold to fire the thruster. Land me softly on the flashing pad.',
+    }),
     run(ctx) {
       const { scr, input, stats, sprites } = ctx;
       const steady = stats.steady || 0, agile = stats.agile || 0;
@@ -1005,6 +1126,7 @@
         R.rect(scr, 0, 132, W, H - 132, P.slate);
         // the character, small now, sitting on the edge and looking home
         R.sprite(scr, sprites.main, 46, horizon(46) + 1 + Math.round(Math.sin(t * 2) * 0.6));
+        THEMES.icon(scr, (ctx.world || THEMES.DEFAULT_WORLD).keepsake, 66, horizon(66) - 4, 4, t);
         if (phaseT > 4.6) {
           const msg = 'THE END';
           const shown = Math.min(msg.length, Math.floor((phaseT - 4.6) / 0.18) + 1);
@@ -1037,6 +1159,8 @@
     return c;
   }
 
-  global.MINIGAMES = { liftoff, sky, whale, refuel, rocks, lander };
+  // Only one classic arcade game remains: the space duet. The other two
+  // challenges use balance and freehand route drawing.
+  global.MINIGAMES = { wobble, orbit, whale };
   global.CUTSCENES = { alive, finale, lost };
 })(window);
